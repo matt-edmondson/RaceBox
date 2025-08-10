@@ -4,7 +4,7 @@
 
 #pragma once
 
-#include <RotaryEncoder.h>
+#include <cstdint>
 #include <functional>
 
 namespace ktsu { namespace racebox { namespace io {
@@ -25,9 +25,11 @@ class EncoderInput {
   void setListener(Listener listener) { listener_ = listener; }
 
  private:
-  RotaryEncoder encoder_;
+  int pinA_;
+  int pinB_;
   int buttonPin_;
-  int lastPos_ = 0;
+  int lastEncoded_ = 0;
+  int32_t position_ = 0;
   bool lastBtn_ = true;
   uint32_t pressStartMs_ = 0;
   Listener listener_;

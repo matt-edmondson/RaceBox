@@ -4,19 +4,10 @@
 
 #pragma once
 
-#include <LovyanGFX.hpp>
-#include "ble/RaceBoxClient.hpp"
-#include "ui/Menu.hpp"
+#include "../ble/RaceBoxClient.hpp"
+#include "Menu.hpp"
 
 namespace ktsu { namespace racebox { namespace ui {
-
-class LGFX : public lgfx::LGFX_Device {
- public:
-  LGFX();
- private:
-  lgfx::Panel_ILI9488 _panel_instance; // ILI9488 SPI panel
-  lgfx::Bus_SPI _bus_instance;
-};
 
 class Display {
  public:
@@ -28,12 +19,11 @@ class Display {
   void updateTelemetry(const ktsu::racebox::ble::RaceboxData& data);
 
  private:
-  LGFX gfx_;
-    ktsu::racebox::ui::MenuNavigator menu_{};
+  ktsu::racebox::ui::MenuNavigator menu_{};
   ktsu::racebox::ble::RaceboxData lastData_{};
   void draw();
-    void drawMenu();
-    void buildMenus();
+  void drawMenu();
+  void buildMenus();
 };
 
 } } } // namespaces
