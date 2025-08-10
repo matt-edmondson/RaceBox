@@ -1,0 +1,32 @@
+# Text normalization: ensure LF line endings in repo, convert on checkout
+* text=auto eol=lf
+
+# Binary files
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+*.ico binary
+*.zip binary
+*.bin binary
+*.elf binary
+
+# Treat common data files as text with LF
+*.md text eol=lf
+*.txt text eol=lf
+*.csv text eol=lf
+*.ini text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.hpp text eol=lf
+*.h text eol=lf
+*.cpp text eol=lf
+*.c text eol=lf
+*.py text eol=lf
+
+# Export-ignore for archives
+.gitignore export-ignore
+.gitattributes export-ignore
+

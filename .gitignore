@@ -1,0 +1,42 @@
+## PlatformIO / embedded build artifacts
+.pio/
+.pioenvs/
+.piolibdeps/
+.libdeps/
+
+# Firmware outputs (usually inside .pio/, but ignore just in case)
+*.bin
+*.elf
+*.map
+
+## IDE settings and local workspace files
+.vscode/
+.idea/
+.vs/
+
+## C/C++ tooling caches
+.ccls-cache/
+.cache/
+compile_commands.json
+compile_flags.txt
+
+## Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+## OS-generated files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+*_flymake.*
+
+## Logs
+*.log
+
+## Generic build output dirs (not used by PlatformIO, but common)
+build/
+dist/
+
