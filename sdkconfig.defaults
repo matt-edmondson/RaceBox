@@ -1,0 +1,30 @@
+# Project-wide ESP-IDF defaults for RaceBox (ESP32-S3, NimBLE central, custom partition table).
+# Keep this file authoritative so fresh checkouts produce a reproducible build.
+
+# --- Target ---
+CONFIG_IDF_TARGET="esp32s3"
+
+# --- Partition table ---
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+
+# --- Bluetooth: NimBLE central (RaceBox Mini is the peripheral) ---
+CONFIG_BT_ENABLED=y
+CONFIG_BT_CONTROLLER_ENABLED=y
+CONFIG_BT_BLUEDROID_ENABLED=n
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+
+# --- FreeRTOS ---
+CONFIG_FREERTOS_HZ=1000
+
+# --- Logging ---
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# --- Compiler ---
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
