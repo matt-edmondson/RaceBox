@@ -31,6 +31,8 @@ class EncoderInput {
   int lastEncoded_ = 0;
   int32_t position_ = 0;
   bool lastBtn_ = true;
+  bool rawBtn_ = true;
+  uint32_t rawBtnChangeMs_ = 0;
   uint32_t pressStartMs_ = 0;
   Listener listener_;
 };

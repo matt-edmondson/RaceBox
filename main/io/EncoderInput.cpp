@@ -30,7 +30,11 @@ void EncoderInput::begin() {
   int b = read_gpio(static_cast<gpio_num_t>(pinB_)) ? 1 : 0;
   lastEncoded_ = (a << 1) | b;
   lastBtn_ = read_gpio(static_cast<gpio_num_t>(buttonPin_));
+  rawBtn_ = lastBtn_;
+  rawBtnChangeMs_ = static_cast<uint32_t>(esp_timer_get_time() / 1000);
 }
+
+namespace { constexpr uint32_t kButtonDebounceMs = 8; }
 
 void EncoderInput::tick() {
   // Simple polling 2-bit Gray decoding
@@ -47,14 +51,24 @@ void EncoderInput::tick() {
   }
   lastEncoded_ = encoded;
 
-  bool btn = read_gpio(static_cast<gpio_num_t>(buttonPin_));
+  // Debounce the button: only accept a new logical level after the raw line
+  // has been stable for kButtonDebounceMs. Without this, mechanical contact
+  // bounce produces multiple Click/LongPress events per physical press.
+  bool rawBtn = read_gpio(static_cast<gpio_num_t>(buttonPin_));
   uint32_t now_ms = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-  if (!btn && lastBtn_) { pressStartMs_ = now_ms; }
-  if (btn && !lastBtn_) {
-    uint32_t held = now_ms - pressStartMs_;
-    if (listener_) { EncoderEvent e{held > 600 ? EncoderEventType::LongPress : EncoderEventType::Click, 0}; listener_(e); }
+  if (rawBtn != rawBtn_) {
+    rawBtn_ = rawBtn;
+    rawBtnChangeMs_ = now_ms;
   }
-  lastBtn_ = btn;
+  if (rawBtn_ != lastBtn_ && (now_ms - rawBtnChangeMs_) >= kButtonDebounceMs) {
+    bool btn = rawBtn_;
+    if (!btn && lastBtn_) { pressStartMs_ = now_ms; }
+    if (btn && !lastBtn_) {
+      uint32_t held = now_ms - pressStartMs_;
+      if (listener_) { EncoderEvent e{held > 600 ? EncoderEventType::LongPress : EncoderEventType::Click, 0}; listener_(e); }
+    }
+    lastBtn_ = btn;
+  }
 }
 
 
