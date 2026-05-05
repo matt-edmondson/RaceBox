@@ -9,6 +9,7 @@ param(
   [switch]$Monitor,
   [switch]$Menuconfig,
   [switch]$Erase,
+  [switch]$SetTarget,
   [string]$IdfRef = "v5.2.2",
   [string]$InstallPath,
   [Parameter(ValueFromRemainingArguments = $true)]
@@ -94,8 +95,21 @@ try {
     Invoke-IdfPy ($commonArgs + 'clean')
   }
 
-  Write-Section "Set target: $Target"
-  Invoke-IdfPy ($commonArgs + @('set-target', $Target))
+  # Only run `set-target` when needed: missing sdkconfig, mismatched target, or
+  # an explicit -SetTarget switch. Running it unconditionally wipes any
+  # menuconfig tweaks (BLE host, partition table, log level, etc.).
+  $sdkconfigPath = Join-Path (Get-Location) 'sdkconfig'
+  $currentTarget = $null
+  if (Test-Path $sdkconfigPath) {
+    $line = Select-String -Path $sdkconfigPath -Pattern '^CONFIG_IDF_TARGET="([^"]+)"' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($line) { $currentTarget = $line.Matches[0].Groups[1].Value }
+  }
+  if ($SetTarget -or -not $currentTarget -or $currentTarget -ne $Target) {
+    Write-Section "Set target: $Target"
+    Invoke-IdfPy ($commonArgs + @('set-target', $Target))
+  } else {
+    Write-Host "Target already $Target (keeping existing sdkconfig)" -ForegroundColor DarkGray
+  }
 
   if ($Menuconfig) {
     Write-Section 'menuconfig'
