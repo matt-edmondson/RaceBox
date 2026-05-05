@@ -32,10 +32,6 @@ void Display::draw() {
   // TODO: integrate real graphics (e.g., LVGL or ILI9488 driver) under IDF
 }
 
-void Display::drawMenu() {
-  (void)menu_;
-}
-
 namespace {
   using namespace ktsu::racebox::ui;
   static Menu rootMenu;

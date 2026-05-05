@@ -22,7 +22,6 @@ class Display {
   ktsu::racebox::ui::MenuNavigator menu_{};
   ktsu::racebox::ble::RaceboxData lastData_{};
   void draw();
-  void drawMenu();
   void buildMenus();
 };
 
