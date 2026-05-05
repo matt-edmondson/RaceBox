@@ -21,7 +21,14 @@ void EncoderInput::begin() {
   io.pull_up_en = GPIO_PULLUP_ENABLE;
   io.pull_down_en = GPIO_PULLDOWN_DISABLE;
   io.pin_bit_mask = (1ULL << pinA_) | (1ULL << pinB_) | (1ULL << buttonPin_);
-  gpio_config(&io);
+  if (gpio_config(&io) != 0) {
+    ESP_LOGE("encoder", "gpio_config failed for pins A=%d B=%d BTN=%d", pinA_, pinB_, buttonPin_);
+    return;
+  }
+  // Seed state from current pin levels so the first tick() doesn't decode a phantom step.
+  int a = read_gpio(static_cast<gpio_num_t>(pinA_)) ? 1 : 0;
+  int b = read_gpio(static_cast<gpio_num_t>(pinB_)) ? 1 : 0;
+  lastEncoded_ = (a << 1) | b;
   lastBtn_ = read_gpio(static_cast<gpio_num_t>(buttonPin_));
 }
 

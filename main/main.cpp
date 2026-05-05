@@ -3,6 +3,7 @@
 // Licensed under the MIT license.
 
 #include "ble/RaceBoxClient.hpp"
+#include "config/Pins.hpp"
 #include "io/EncoderInput.hpp"
 #include "ui/Display.hpp"
 
@@ -15,7 +16,10 @@ using ktsu::racebox::ui::Display;
 static const char* TAG = "app";
 
 static Display s_display;
-static EncoderInput s_encoderInput(/*pinA=*/2, /*pinB=*/1, /*pinButton=*/3);
+static EncoderInput s_encoderInput(
+    ktsu::Pins::encoderPinA,
+    ktsu::Pins::encoderPinB,
+    ktsu::Pins::encoderButtonPin);
 static RaceBoxClient s_raceboxClient;
 
 static void onEncoderEvent(const ktsu::racebox::io::EncoderEvent& event) {
