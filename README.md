@@ -20,6 +20,7 @@ Or use the PowerShell helper (auto-installs ESP-IDF if needed):
 ```
 
 Notes:
+- `sdkconfig.defaults` and `partitions.csv` are checked in to keep builds reproducible across machines. NimBLE is selected as the BLE host (central role) and the app partition is sized to ~3 MB. Re-run `idf.py reconfigure` after pulling changes to either file.
 - BLE client is currently a stub; integrate NimBLE central (IDF) to scan and subscribe to UART service.
 - Display is a stub; choose an IDF-friendly driver (e.g., LVGL + ILI9488 panel driver) and wire SPI + backlight.
 
