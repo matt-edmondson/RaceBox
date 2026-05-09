@@ -18,6 +18,8 @@ idf_component_register(
     nvs_flash
     bt
     spi_flash
+    esp_lcd
+    lvgl
 )
 
 

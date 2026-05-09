@@ -18,7 +18,6 @@
 #if __has_include("esp_log.h")
   #include "esp_log.h"
 #else
-  #include <cstdio>
   #define ESP_LOGI(TAG, FMT, ...) ((void)0)
   #define ESP_LOGW(TAG, FMT, ...) ((void)0)
   #define ESP_LOGE(TAG, FMT, ...) ((void)0)
@@ -46,11 +45,14 @@
   enum {
     GPIO_INTR_DISABLE = 0,
     GPIO_MODE_INPUT = 0,
+    GPIO_MODE_OUTPUT = 1,
     GPIO_PULLUP_ENABLE = 1,
+    GPIO_PULLUP_DISABLE = 0,
     GPIO_PULLDOWN_DISABLE = 0,
   };
   static inline int gpio_config(const gpio_config_t*) { return 0; }
   static inline int gpio_get_level(gpio_num_t) { return 1; }
+  static inline int gpio_set_level(gpio_num_t, int) { return 0; }
 #endif
 
 

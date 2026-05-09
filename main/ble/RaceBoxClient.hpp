@@ -6,6 +6,7 @@
 
 #include <functional>
 #include <cstdint>
+#include <vector>
 
 namespace ktsu { namespace racebox { namespace ble {
 
@@ -26,6 +27,24 @@ class RaceBoxClient {
 
  private:
   TelemetryListener telemetryListener_;
+
+    // --- BLE / NimBLE state ---
+    bool started_ = false;
+    uint16_t connHandle_ = 0;
+    uint16_t uartSvcStart_ = 0;
+    uint16_t uartSvcEnd_ = 0;
+    uint16_t uartTxValHandle_ = 0; // Notify from device
+    uint16_t uartRxValHandle_ = 0; // Write to device
+
+    // Buffer for reassembling UBX packets that may be split across notifications
+    std::vector<uint8_t> notifyBuffer_{};
+
+    // Internal helpers
+    void handleNotifyData(const uint8_t* data, uint16_t len);
+    void processUbxBuffer();
+    // Callback friends declared in cpp with NimBLE headers; avoid header-level NimBLE types
+    friend int gap_scan_cb(struct ble_gap_event* event, void* arg);
+    friend int gap_conn_cb(struct ble_gap_event* event, void* arg);
 };
 
 } } } // namespaces
