@@ -49,4 +49,12 @@ int MenuNavigator::currentIndex() const {
   return frames_.back().index;
 }
 
+const MenuItem* MenuNavigator::currentItem() const {
+  if (frames_.empty()) return nullptr;
+  const Frame& f = frames_.back();
+  if (!f.menu || !f.menu->items || f.menu->itemCount <= 0) return nullptr;
+  if (f.index < 0 || f.index >= f.menu->itemCount) return nullptr;
+  return &f.menu->items[f.index];
+}
+
 

@@ -1,8 +1,14 @@
-# Project-wide ESP-IDF defaults for RaceBox (ESP32-S3, NimBLE central, custom partition table).
+# Project-wide ESP-IDF defaults for RaceBox (ESP32-S3, NimBLE central, ILI9488 + LVGL).
 # Keep this file authoritative so fresh checkouts produce a reproducible build.
 
 # --- Target ---
 CONFIG_IDF_TARGET="esp32s3"
+
+# --- Flash ---
+# The partition table below needs >= 4 MB; the IDF default is 2 MB, which fails
+# the partition-table size check before the link stage.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
 
 # --- Partition table ---
 CONFIG_PARTITION_TABLE_CUSTOM=y
@@ -19,6 +25,19 @@ CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
 CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
 CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+# A larger ATT MTU lets a whole 88-byte RaceBox frame arrive in one notification.
+CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=247
+
+# --- LVGL ---
+# Pinned so a minor version bump cannot silently change colour depth or drop a
+# font the UI draws with.
+CONFIG_LV_COLOR_DEPTH_16=y
+CONFIG_LV_MEM_SIZE_KILOBYTES=48
+CONFIG_LV_DEF_REFR_PERIOD=16
+CONFIG_LV_FONT_MONTSERRAT_14=y
+CONFIG_LV_FONT_MONTSERRAT_28=y
+CONFIG_LV_FONT_MONTSERRAT_48=y
+CONFIG_LV_USE_PERF_MONITOR=n
 
 # --- FreeRTOS ---
 CONFIG_FREERTOS_HZ=1000

@@ -1,5 +1,7 @@
 version: 1.0.0
 dependencies:
-  espressif/esp_lcd: "^1.4.0"
-  lvgl/lvgl: "^9.1.0"
-
+  # esp_lcd itself ships with ESP-IDF and must NOT be requested from the
+  # registry; only the ILI9488 vendor driver is an external component.
+  idf: ">=5.2"
+  lvgl/lvgl: "~9.1.0"
+  atanisoft/esp_lcd_ili9488: "^1.0.0"

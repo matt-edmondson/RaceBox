@@ -1,0 +1,48 @@
+name: Build
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host-tests:
+    name: Host unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S test/host -B build-host -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build-host --parallel
+
+      - name: Run tests
+        run: ./build-host/racebox_host_tests
+
+  firmware:
+    name: ESP-IDF firmware build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned to the same ref build.ps1 installs, so CI and local builds cannot
+      # drift apart.
+      - name: Build firmware
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.2.2
+          target: esp32s3
+          command: idf.py build
+
+      - name: Report image size
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.2.2
+          target: esp32s3
+          command: idf.py size

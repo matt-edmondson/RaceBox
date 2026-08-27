@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <functional>
 #include <vector>
 
@@ -38,7 +39,11 @@ class MenuNavigator {
 
   const Menu* currentMenu() const;
   int currentIndex() const;
+  // The item under the cursor, or nullptr when there is no valid selection.
+  const MenuItem* currentItem() const;
   bool canGoBack() const { return frames_.size() > 1; }
+  // Nesting depth: 1 at the root, 2 inside a submenu, and so on.
+  size_t depth() const { return frames_.size(); }
 
  private:
   struct Frame {
