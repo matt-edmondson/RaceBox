@@ -13,6 +13,9 @@
 #ifdef RACEBOX_HAVE_DISPLAY
   #include "driver/ledc.h"
   #include "esp_heap_caps.h"
+  // The ILI9488 driver is a managed component; IDF's esp_lcd_panel_vendor.h
+  // only declares its own built-in panels (ST7789, NT35510, SSD1306).
+  #include "esp_lcd_ili9488.h"
 #endif
 
 namespace ktsu { namespace racebox { namespace ui {

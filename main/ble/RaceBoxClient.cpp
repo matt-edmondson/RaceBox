@@ -25,6 +25,17 @@ namespace ktsu { namespace racebox { namespace ble {
 
 namespace {
 constexpr const char* TAG = "RaceBoxClient";
+
+#ifdef RACEBOX_HAVE_NIMBLE
+// ESP-IDF's NimBLE exposes no ble_uuid128_from_str(), so UUIDs are handed over
+// as little-endian bytes derived at compile time in BleUuids.hpp.
+ble_uuid128_t makeUuid128(const ktsu::racebox::config::Uuid128Bytes& src) {
+  ble_uuid128_t uuid{};
+  uuid.u.type = BLE_UUID_TYPE_128;
+  memcpy(uuid.value, src.bytes, sizeof(uuid.value));
+  return uuid;
+}
+#endif
 constexpr uint16_t kCccdUuid = 0x2902;
 constexpr uint16_t kPreferredMtu = 247; // enough for a whole RaceBox frame
 } // namespace
@@ -125,13 +136,11 @@ bool RaceBoxClient::matchesRacebox(const struct ble_gap_disc_desc& desc) {
   }
 
   bool serviceMatch = false;
-  ble_uuid128_t uartUuid{};
-  if (ble_uuid128_from_str(Uuids::uartService, &uartUuid) == 0) {
-    for (int i = 0; i < fields.num_uuids128; ++i) {
-      if (ble_uuid_cmp(&fields.uuids128[i].u, &uartUuid.u) == 0) {
-        serviceMatch = true;
-        break;
-      }
+  const ble_uuid128_t uartUuid = makeUuid128(kUartServiceBytes);
+  for (int i = 0; i < fields.num_uuids128; ++i) {
+    if (ble_uuid_cmp(&fields.uuids128[i].u, &uartUuid.u) == 0) {
+      serviceMatch = true;
+      break;
     }
   }
   return nameMatch || serviceMatch;
@@ -174,11 +183,7 @@ int RaceBoxClient::gapEventCb(struct ble_gap_event* ev, void* arg) {
       ble_att_set_preferred_mtu(kPreferredMtu);
       ble_gattc_exchange_mtu(self->connHandle_, &RaceBoxClient::mtuCb, self);
 
-      ble_uuid128_t svcUuid{};
-      if (ble_uuid128_from_str(Uuids::uartService, &svcUuid) != 0) {
-        ESP_LOGE(TAG, "bad UART service UUID literal");
-        return 0;
-      }
+      const ble_uuid128_t svcUuid = makeUuid128(kUartServiceBytes);
       const int rc = ble_gattc_disc_svc_by_uuid(self->connHandle_, &svcUuid.u,
                                                 &RaceBoxClient::serviceDiscCb, self);
       if (rc != 0) ESP_LOGE(TAG, "service discovery failed to start: %d", rc);
@@ -281,10 +286,8 @@ int RaceBoxClient::charDiscCb(uint16_t connHandle, const struct ble_gatt_error* 
   }
   if (!chr) return 0;
 
-  ble_uuid128_t txUuid{};
-  ble_uuid128_t rxUuid{};
-  ble_uuid128_from_str(Uuids::uartTxCharacteristic, &txUuid);
-  ble_uuid128_from_str(Uuids::uartRxCharacteristic, &rxUuid);
+  const ble_uuid128_t txUuid = makeUuid128(kUartTxBytes);
+  const ble_uuid128_t rxUuid = makeUuid128(kUartRxBytes);
 
   if (ble_uuid_cmp(&chr->uuid.u, &txUuid.u) == 0) {
     self->uartTxValHandle_ = chr->val_handle;

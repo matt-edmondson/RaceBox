@@ -15,6 +15,7 @@ add_executable(racebox_host_tests
   TestUbxParser.cpp
   TestLapTimer.cpp
   TestMenuAndSettings.cpp
+  TestUuids.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../../main/ble/UbxParser.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../../main/ui/LapTimer.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../../main/ui/Menu.cpp

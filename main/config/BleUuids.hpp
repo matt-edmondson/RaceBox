@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "UuidParse.hpp"
+
 namespace ktsu { namespace racebox { namespace ble {
 
 // UUIDs used to find and talk to a RaceBox Mini.
@@ -34,5 +36,15 @@ struct Uuids {
   static constexpr const char* uartRxCharacteristic = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"; // write  (host -> device)
   static constexpr const char* uartTxCharacteristic = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"; // notify (device -> host)
 };
+
+// NimBLE needs UUIDs as little-endian bytes, not strings -- ESP-IDF's port has
+// no string parser. These are derived from the literals above at compile time,
+// so the two can never disagree.
+inline constexpr ktsu::racebox::config::Uuid128Bytes kUartServiceBytes =
+    ktsu::racebox::config::uuidToNimbleBytes(Uuids::uartService);
+inline constexpr ktsu::racebox::config::Uuid128Bytes kUartRxBytes =
+    ktsu::racebox::config::uuidToNimbleBytes(Uuids::uartRxCharacteristic);
+inline constexpr ktsu::racebox::config::Uuid128Bytes kUartTxBytes =
+    ktsu::racebox::config::uuidToNimbleBytes(Uuids::uartTxCharacteristic);
 
 } } } // namespaces
