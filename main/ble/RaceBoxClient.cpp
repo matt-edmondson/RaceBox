@@ -5,238 +5,440 @@
 #include "RaceBoxClient.hpp"
 
 #include "../common/IdfCompat.hpp"
-#include <algorithm>
-#include <cstring>
-#if __has_include("esp_bt.h")
-#include "esp_bt.h"
-#include "esp_nimble_hci.h"
-#include "nimble/nimble_port.h"
-#include "nimble/nimble_port_freertos.h"
-#include "host/ble_hs.h"
-#include "host/ble_uuid.h"
-#include "host/util/util.h"
-#include "services/gap/ble_svc_gap.h"
-#include "services/gatt/ble_svc_gatt.h"
 #include "../config/BleUuids.hpp"
+
+#include <cstring>
+#include <vector>
+
+#ifdef RACEBOX_HAVE_NIMBLE
+  #include "esp_bt.h"
+  #include "nimble/nimble_port.h"
+  #include "nimble/nimble_port_freertos.h"
+  #include "host/ble_hs.h"
+  #include "host/ble_uuid.h"
+  #include "host/util/util.h"
+  #include "services/gap/ble_svc_gap.h"
+  #include "services/gatt/ble_svc_gatt.h"
 #endif
 
-using ktsu::racebox::ble::RaceBoxClient;
+namespace ktsu { namespace racebox { namespace ble {
 
-static const char* TAG = "RaceBoxClient";
-
-#if __has_include("esp_bt.h")
 namespace {
-  // Forward declarations of callbacks
-  int gap_scan_cb(struct ble_gap_event* event, void* arg);
-  int gap_conn_cb(struct ble_gap_event* event, void* arg);
-  int gatt_disc_svc_cb(uint16_t conn_handle, const ble_gatt_error* error, const ble_gatt_svc* service, void* arg);
-  int gatt_disc_chr_cb(uint16_t conn_handle, const ble_gatt_error* error, const ble_gatt_chr* chr, void* arg);
-  int gatt_disc_dsc_cb(uint16_t conn_handle, const ble_gatt_error* error, uint16_t chr_def_handle, const ble_gatt_dsc* dsc, void* arg);
+constexpr const char* TAG = "RaceBoxClient";
 
-  // Host task
-  void host_task(void* param) { nimble_port_run(); nimble_port_freertos_deinit(); }
-
-  // Singleton pointer to access instance inside static callbacks
-  static RaceBoxClient* g_client_instance = nullptr;
+#ifdef RACEBOX_HAVE_NIMBLE
+// ESP-IDF's NimBLE exposes no ble_uuid128_from_str(), so UUIDs are handed over
+// as little-endian bytes derived at compile time in BleUuids.hpp.
+ble_uuid128_t makeUuid128(const ktsu::racebox::config::Uuid128Bytes& src) {
+  ble_uuid128_t uuid{};
+  uuid.u.type = BLE_UUID_TYPE_128;
+  memcpy(uuid.value, src.bytes, sizeof(uuid.value));
+  return uuid;
 }
 #endif
+constexpr uint16_t kCccdUuid = 0x2902;
+constexpr uint16_t kPreferredMtu = 247; // enough for a whole RaceBox frame
+} // namespace
 
-void RaceBoxClient::begin() {
-  ESP_LOGI(TAG, "BLE client init");
-#if __has_include("esp_bt.h")
-  if (started_) return;
-  started_ = true;
-  #if __has_include("esp_bt.h")
-  // Save instance pointer for callbacks
-  ::g_client_instance = this;
-  #endif
-  // Enable BLE controller and NimBLE host
-  esp_err_t err = esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
-  if (err != ESP_OK) { ESP_LOGW(TAG, "esp_bt_controller_mem_release failed: %d", err); }
-  ESP_ERROR_CHECK(esp_nimble_hci_and_controller_init());
-  nimble_port_init();
+const char* toString(ConnectionState state) {
+  switch (state) {
+    case ConnectionState::Idle: return "Idle";
+    case ConnectionState::Scanning: return "Scanning";
+    case ConnectionState::Connecting: return "Connecting";
+    case ConnectionState::Connected: return "Connected";
+    case ConnectionState::Streaming: return "Streaming";
+    case ConnectionState::Disconnected: return "Disconnected";
+  }
+  return "Unknown";
+}
+
+void RaceBoxClient::setState(ConnectionState next) {
+  if (state_ == next) return;
+  state_ = next;
+  ESP_LOGI(TAG, "state -> %s", toString(next));
+  if (stateListener_) stateListener_(next);
+}
+
+void RaceBoxClient::onNotifyData(const uint8_t* data, uint16_t len) {
+  parser_.append(data, len);
+}
+
+#ifdef RACEBOX_HAVE_NIMBLE
+
+RaceBoxClient* RaceBoxClient::s_instance = nullptr;
+
+void RaceBoxClient::hostTask(void* param) {
+  (void)param;
+  nimble_port_run();
+  nimble_port_freertos_deinit();
+}
+
+void RaceBoxClient::onHostReset(int reason) {
+  ESP_LOGW(TAG, "BLE host reset, reason=%d", reason);
+  if (s_instance) s_instance->setState(ConnectionState::Disconnected);
+}
+
+void RaceBoxClient::onHostSync() {
+  if (!s_instance) {
+    ESP_LOGE(TAG, "host synced with no client instance");
+    return;
+  }
+  // Make sure we have a usable identity address, then ask the host which type
+  // to advertise -- boards without a burned-in public address must use a
+  // random static one, and hardcoding public would fail on those.
+  int rc = ble_hs_util_ensure_addr(0);
+  if (rc != 0) {
+    ESP_LOGE(TAG, "ble_hs_util_ensure_addr failed: %d", rc);
+    return;
+  }
+  rc = ble_hs_id_infer_auto(0, &s_instance->ownAddrType_);
+  if (rc != 0) {
+    ESP_LOGE(TAG, "ble_hs_id_infer_auto failed: %d", rc);
+    return;
+  }
+  ble_svc_gap_device_name_set("RaceBoxClient");
+  s_instance->startScan();
+}
+
+void RaceBoxClient::startScan() {
+  ble_gap_disc_params params{};
+  params.itvl = 0x0060;
+  params.window = 0x0030;
+  params.filter_policy = 0;
+  params.limited = 0;
+  params.passive = 0; // active scan, so we receive scan-response names
+  params.filter_duplicates = 1;
+
+  const int rc = ble_gap_disc(ownAddrType_, BLE_HS_FOREVER, &params, &RaceBoxClient::gapEventCb,
+                              this);
+  if (rc != 0) {
+    ESP_LOGE(TAG, "ble_gap_disc failed: %d", rc);
+    return;
+  }
+  setState(ConnectionState::Scanning);
+}
+
+bool RaceBoxClient::matchesRacebox(const struct ble_gap_disc_desc& desc) {
+  ble_hs_adv_fields fields{};
+  if (ble_hs_adv_parse_fields(&fields, desc.data, desc.length_data) != 0) return false;
+
+  bool nameMatch = false;
+  if (fields.name && fields.name_len > 0) {
+    const size_t n = fields.name_len < sizeof(peerName_) - 1 ? fields.name_len
+                                                            : sizeof(peerName_) - 1;
+    // RaceBox devices advertise as "RaceBox <model> <serial>".
+    if (fields.name_len >= 7 &&
+        strncmp(reinterpret_cast<const char*>(fields.name), "RaceBox", 7) == 0) {
+      nameMatch = true;
+      memcpy(peerName_, fields.name, n);
+      peerName_[n] = '\0';
+    }
+  }
+
+  bool serviceMatch = false;
+  const ble_uuid128_t uartUuid = makeUuid128(kUartServiceBytes);
+  for (int i = 0; i < fields.num_uuids128; ++i) {
+    if (ble_uuid_cmp(&fields.uuids128[i].u, &uartUuid.u) == 0) {
+      serviceMatch = true;
+      break;
+    }
+  }
+  return nameMatch || serviceMatch;
+}
+
+int RaceBoxClient::gapEventCb(struct ble_gap_event* ev, void* arg) {
+  auto* self = static_cast<RaceBoxClient*>(arg);
+  if (!self || !ev) return 0;
+
+  switch (ev->type) {
+    case BLE_GAP_EVENT_DISC: {
+      if (!self->matchesRacebox(ev->disc)) return 0;
+      self->peerRssi_ = ev->disc.rssi;
+      ESP_LOGI(TAG, "found '%s' (rssi %d); connecting",
+               self->peerName_[0] ? self->peerName_ : "RaceBox", self->peerRssi_);
+      ble_gap_disc_cancel();
+      self->setState(ConnectionState::Connecting);
+      const int rc = ble_gap_connect(self->ownAddrType_, &ev->disc.addr, 30000, nullptr,
+                                     &RaceBoxClient::gapEventCb, self);
+      if (rc != 0) {
+        ESP_LOGE(TAG, "ble_gap_connect failed: %d", rc);
+        self->startScan();
+      }
+      return 0;
+    }
+
+    case BLE_GAP_EVENT_CONNECT: {
+      if (ev->connect.status != 0) {
+        ESP_LOGE(TAG, "connect failed: %d; rescanning", ev->connect.status);
+        self->startScan();
+        return 0;
+      }
+      self->connHandle_ = ev->connect.conn_handle;
+      self->attMtu_ = 23;
+      self->parser_.reset();
+      self->setState(ConnectionState::Connected);
+
+      // A larger MTU lets a whole 88-byte RaceBox frame arrive in one
+      // notification instead of four.
+      ble_att_set_preferred_mtu(kPreferredMtu);
+      ble_gattc_exchange_mtu(self->connHandle_, &RaceBoxClient::mtuCb, self);
+
+      const ble_uuid128_t svcUuid = makeUuid128(kUartServiceBytes);
+      const int rc = ble_gattc_disc_svc_by_uuid(self->connHandle_, &svcUuid.u,
+                                                &RaceBoxClient::serviceDiscCb, self);
+      if (rc != 0) ESP_LOGE(TAG, "service discovery failed to start: %d", rc);
+      return 0;
+    }
+
+    case BLE_GAP_EVENT_DISCONNECT: {
+      ESP_LOGW(TAG, "disconnected: reason=%d", ev->disconnect.reason);
+      self->connHandle_ = 0;
+      self->uartTxValHandle_ = 0;
+      self->uartRxValHandle_ = 0;
+      self->attMtu_ = 23;
+      self->parser_.reset();
+      self->setState(ConnectionState::Disconnected);
+      self->startScan();
+      return 0;
+    }
+
+    case BLE_GAP_EVENT_NOTIFY_RX: {
+      if (ev->notify_rx.attr_handle != self->uartTxValHandle_ || !ev->notify_rx.om) return 0;
+      const uint16_t len = OS_MBUF_PKTLEN(ev->notify_rx.om);
+      if (len == 0) return 0;
+      // Stack buffer sized for a full ATT payload avoids heap churn at 25 Hz.
+      uint8_t chunk[kPreferredMtu];
+      const uint16_t n = len < sizeof(chunk) ? len : sizeof(chunk);
+      if (os_mbuf_copydata(ev->notify_rx.om, 0, n, chunk) == 0) {
+        self->onNotifyData(chunk, n);
+      }
+      return 0;
+    }
+
+    case BLE_GAP_EVENT_MTU: {
+      self->attMtu_ = ev->mtu.value;
+      ESP_LOGI(TAG, "MTU now %u", self->attMtu_);
+      return 0;
+    }
+
+    default:
+      return 0;
+  }
+}
+
+int RaceBoxClient::mtuCb(uint16_t connHandle, const struct ble_gatt_error* error, uint16_t mtu,
+                         void* arg) {
+  (void)connHandle;
+  auto* self = static_cast<RaceBoxClient*>(arg);
+  if (!self) return 0;
+  if (error && error->status == 0) {
+    self->attMtu_ = mtu;
+    ESP_LOGI(TAG, "MTU exchange ok: %u", mtu);
+  } else {
+    ESP_LOGW(TAG, "MTU exchange failed (%d); staying at %u",
+             error ? error->status : -1, self->attMtu_);
+  }
+  return 0;
+}
+
+int RaceBoxClient::serviceDiscCb(uint16_t connHandle, const struct ble_gatt_error* error,
+                                 const struct ble_gatt_svc* service, void* arg) {
+  auto* self = static_cast<RaceBoxClient*>(arg);
+  if (!self) return BLE_HS_EDONE;
+
+  if (error && error->status == BLE_HS_EDONE) {
+    if (self->uartSvcStart_ == 0) {
+      ESP_LOGE(TAG, "UART service not found on peer");
+    }
+    return 0;
+  }
+  if (!error || error->status != 0) {
+    ESP_LOGE(TAG, "service discovery error: %d", error ? error->status : -1);
+    return error ? error->status : BLE_HS_EDONE;
+  }
+  if (!service) return 0;
+
+  self->uartSvcStart_ = service->start_handle;
+  self->uartSvcEnd_ = service->end_handle;
+  ESP_LOGI(TAG, "UART service handles %u..%u", self->uartSvcStart_, self->uartSvcEnd_);
+
+  return ble_gattc_disc_all_chrs(connHandle, self->uartSvcStart_, self->uartSvcEnd_,
+                                 &RaceBoxClient::charDiscCb, self);
+}
+
+int RaceBoxClient::charDiscCb(uint16_t connHandle, const struct ble_gatt_error* error,
+                              const struct ble_gatt_chr* chr, void* arg) {
+  auto* self = static_cast<RaceBoxClient*>(arg);
+  if (!self) return BLE_HS_EDONE;
+
+  if (error && error->status == BLE_HS_EDONE) {
+    if (self->uartTxValHandle_ == 0) {
+      ESP_LOGE(TAG, "UART TX characteristic not found");
+      return 0;
+    }
+    // Find the CCCD that turns notifications on.
+    return ble_gattc_disc_all_dscs(connHandle, self->uartTxValHandle_, self->uartSvcEnd_,
+                                   &RaceBoxClient::descriptorDiscCb, self);
+  }
+  if (!error || error->status != 0) {
+    ESP_LOGE(TAG, "characteristic discovery error: %d", error ? error->status : -1);
+    return error ? error->status : BLE_HS_EDONE;
+  }
+  if (!chr) return 0;
+
+  const ble_uuid128_t txUuid = makeUuid128(kUartTxBytes);
+  const ble_uuid128_t rxUuid = makeUuid128(kUartRxBytes);
+
+  if (ble_uuid_cmp(&chr->uuid.u, &txUuid.u) == 0) {
+    self->uartTxValHandle_ = chr->val_handle;
+    ESP_LOGI(TAG, "TX (notify) handle=%u", self->uartTxValHandle_);
+  } else if (ble_uuid_cmp(&chr->uuid.u, &rxUuid.u) == 0) {
+    self->uartRxValHandle_ = chr->val_handle;
+    ESP_LOGI(TAG, "RX (write) handle=%u", self->uartRxValHandle_);
+  }
+  return 0;
+}
+
+int RaceBoxClient::descriptorDiscCb(uint16_t connHandle, const struct ble_gatt_error* error,
+                                    uint16_t chrDefHandle, const struct ble_gatt_dsc* dsc,
+                                    void* arg) {
+  (void)chrDefHandle;
+  auto* self = static_cast<RaceBoxClient*>(arg);
+  if (!self) return BLE_HS_EDONE;
+
+  if (error && error->status == BLE_HS_EDONE) return 0;
+  if (!error || error->status != 0) {
+    ESP_LOGE(TAG, "descriptor discovery error: %d", error ? error->status : -1);
+    return error ? error->status : BLE_HS_EDONE;
+  }
+  if (!dsc) return 0;
+
+  ble_uuid16_t cccd{};
+  cccd.u.type = BLE_UUID_TYPE_16;
+  cccd.value = kCccdUuid;
+  if (ble_uuid_cmp(&dsc->uuid.u, &cccd.u) != 0) return 0;
+
+  const uint8_t enableNotify[2] = {0x01, 0x00};
+  const int rc = ble_gattc_write_flat(connHandle, dsc->handle, enableNotify,
+                                      sizeof(enableNotify), &RaceBoxClient::writeStatusCb, self);
+  if (rc != 0) ESP_LOGE(TAG, "CCCD write failed to start: %d", rc);
+  return 0;
+}
+
+int RaceBoxClient::writeStatusCb(uint16_t connHandle, const struct ble_gatt_error* error,
+                                 struct ble_gatt_attr* attr, void* arg) {
+  (void)connHandle;
+  (void)attr;
+  auto* self = static_cast<RaceBoxClient*>(arg);
+  if (!self) return 0;
+
+  if (error && error->status == 0) {
+    ESP_LOGI(TAG, "notifications enabled");
+    self->setState(ConnectionState::Streaming);
+  } else {
+    ESP_LOGE(TAG, "enabling notifications failed: %d", error ? error->status : -1);
+  }
+  return 0;
+}
+
+bool RaceBoxClient::begin() {
+  if (started_) return true;
+
+  s_instance = this;
+  parser_.setSink([this](const RaceboxData& data) {
+    if (telemetryListener_) telemetryListener_(data);
+  });
+
+  // ESP32-S3 has no Classic BT; reclaiming its memory is harmless elsewhere.
+  const esp_err_t relErr = esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
+  if (relErr != ESP_OK && relErr != ESP_ERR_INVALID_STATE) {
+    ESP_LOGD(TAG, "esp_bt_controller_mem_release: %s", esp_err_to_name(relErr));
+  }
+
+  // Since ESP-IDF v5.0 nimble_port_init() also brings up the controller and HCI;
+  // the old esp_nimble_hci_and_controller_init() no longer exists.
+  const esp_err_t err = nimble_port_init();
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "nimble_port_init failed: %s", esp_err_to_name(err));
+    return false;
+  }
+
   ble_svc_gap_init();
   ble_svc_gatt_init();
-  ble_hs_cfg.reset_cb = [](int reason){ ESP_LOGW(TAG, "BLE reset, reason=%d", reason); };
-  ble_hs_cfg.sync_cb = [](){
-    ESP_LOGI(TAG, "BLE synced; starting scan");
-    ble_svc_gap_device_name_set("RaceBoxClient");
-    ble_gap_disc_params params{}; params.itvl=0x0060; params.window=0x0030; params.filter_policy=0; params.limited=0; params.passive=1;
-    ble_gap_disc(0, BLE_HS_FOREVER, &params, gap_scan_cb, nullptr);
-  };
-  nimble_port_freertos_init(host_task);
-#else
-  ESP_LOGW(TAG, "Built without ESP-IDF BLE headers; running in stub mode");
-#endif
+  ble_hs_cfg.reset_cb = &RaceBoxClient::onHostReset;
+  ble_hs_cfg.sync_cb = &RaceBoxClient::onHostSync;
+
+  nimble_port_freertos_init(&RaceBoxClient::hostTask);
+  started_ = true;
+  ESP_LOGI(TAG, "NimBLE central started");
+  return true;
 }
 
-void RaceBoxClient::loop() {
-  // No-op; NimBLE runs in host task
-}
-
-void RaceBoxClient::handleNotifyData(const uint8_t* data, uint16_t len) {
-  if (!data || len == 0) return;
-  notifyBuffer_.insert(notifyBuffer_.end(), data, data + len);
-  processUbxBuffer();
-}
-
-static bool ubx_validate_and_extract(const std::vector<uint8_t>& buf, size_t& out_packet_len) {
-  out_packet_len = 0;
-  if (buf.size() < 8) return false;
-  size_t i = 0;
-  while (i + 8 <= buf.size()) {
-    if (buf[i] == 0xB5 && buf[i+1] == 0x62) break; i++;
+bool RaceBoxClient::sendUbx(uint8_t msgClass, uint8_t msgId, const uint8_t* payload,
+                            uint16_t payloadLen) {
+  if (state_ != ConnectionState::Streaming && state_ != ConnectionState::Connected) {
+    ESP_LOGW(TAG, "sendUbx while not connected");
+    return false;
   }
-  if (i > 0) return false; // caller ensures buffer starts at header
-  uint16_t payload_len = static_cast<uint16_t>(buf[4] | (buf[5] << 8));
-  size_t pkt_len = 6 + payload_len + 2;
-  if (buf.size() < pkt_len) return false;
-  uint8_t ck_a = 0, ck_b = 0; for (size_t j = 2; j < 6 + payload_len; ++j) { ck_a = ck_a + buf[j]; ck_b = ck_b + ck_a; }
-  if (buf[6 + payload_len] != ck_a || buf[7 + payload_len] != ck_b) { out_packet_len = pkt_len; return true; } // invalid, but consume to resync
-  out_packet_len = pkt_len; return true;
-}
-
-void RaceBoxClient::processUbxBuffer() {
-  // Find frames; consume as they complete
-  for (;;) {
-    if (notifyBuffer_.size() < 8) return;
-    // Align to header
-    const uint8_t hdr[2] = {0xB5, 0x62};
-    auto it = std::search(notifyBuffer_.begin(), notifyBuffer_.end(), std::begin(hdr), std::end(hdr));
-    if (it != notifyBuffer_.begin()) {
-      if (it == notifyBuffer_.end()) { notifyBuffer_.clear(); return; }
-      notifyBuffer_.erase(notifyBuffer_.begin(), it);
-      if (notifyBuffer_.size() < 8) return;
-    }
-    size_t pkt_len = 0; if (!ubx_validate_and_extract(notifyBuffer_, pkt_len)) return;
-    if (pkt_len == 0 || notifyBuffer_.size() < pkt_len) return;
-    // Parse if class=0xFF id=0x01 and payload length matches 80
-    const uint8_t* pkt = notifyBuffer_.data();
-    uint8_t msg_class = pkt[2]; uint8_t msg_id = pkt[3]; uint16_t payload_len = static_cast<uint16_t>(pkt[4] | (pkt[5] << 8));
-    if (msg_class == 0xFF && msg_id == 0x01 && payload_len >= 80) {
-      const uint8_t* p = pkt + 6;
-      RaceboxData d{};
-      // sats at offset 23 (byte)
-      d.sats = p[23];
-      // MSL altitude at offset 36 (Int32, mm) -> meters
-      int32_t alt_mm = static_cast<int32_t>(p[36] | (p[37] << 8) | (p[38] << 16) | (p[39] << 24));
-      d.altitudeM = static_cast<float>(alt_mm) / 1000.0f;
-      // Speed at offset 48 (Int32, mm/s) -> km/h
-      int32_t spd_mms = static_cast<int32_t>(p[48] | (p[49] << 8) | (p[50] << 16) | (p[51] << 24));
-      d.speedKmh = static_cast<float>(spd_mms) * 3.6f / 1000.0f;
-      if (telemetryListener_) telemetryListener_(d);
-    }
-    // Consume packet
-    notifyBuffer_.erase(notifyBuffer_.begin(), notifyBuffer_.begin() + pkt_len);
+  if (uartRxValHandle_ == 0) {
+    ESP_LOGW(TAG, "sendUbx before the RX characteristic was discovered");
+    return false;
   }
-}
-
-#if __has_include("esp_bt.h")
-// Static callback implementations
-int gap_scan_cb(struct ble_gap_event* ev, void* arg) {
-  (void)arg;
-  if (ev->type == BLE_GAP_EVENT_DISC) {
-    const ble_gap_disc_desc& d = ev->disc;
-    ble_hs_adv_fields f{};
-    if (ble_hs_adv_parse_fields(&f, d.data, d.length_data) == 0) {
-      bool name_ok = false;
-      if (f.name && f.name_len) {
-        const char* n = reinterpret_cast<const char*>(f.name);
-        name_ok = (f.name_len >= 8 && strncmp(n, "RaceBox ", 8) == 0) || (f.name_len >= 12 && strncmp(n, "RaceBox Mini", 12) == 0);
-      }
-      bool svc_ok = false;
-      ble_uuid128_t uart_uuid{}; ble_uuid128_from_str(ktsu::racebox::ble::Uuids::uartService, &uart_uuid);
-      for (int i = 0; i < f.num_uuids128; ++i) {
-        if (ble_uuid_cmp(&f.uuids128[i].u, &uart_uuid.u) == 0) { svc_ok = true; break; }
-      }
-      if (name_ok || svc_ok) {
-        ESP_LOGI(TAG, "Found candidate; connecting");
-        ble_gap_disc_cancel();
-        ble_gap_connect(0, &d.addr, BLE_HS_FOREVER, nullptr, gap_conn_cb, nullptr);
-      }
-    }
+  if (payloadLen > UbxParser::kMaxPayloadLen) {
+    ESP_LOGE(TAG, "sendUbx payload too large: %u", payloadLen);
+    return false;
   }
-  return 0;
-}
 
-int gap_conn_cb(struct ble_gap_event* ev, void* arg) {
-  (void)arg;
-  RaceBoxClient* self = ::g_client_instance;
-  switch (ev->type) {
-    case BLE_GAP_EVENT_CONNECT:
-      if (ev->connect.status == 0) {
-        self->connHandle_ = ev->connect.conn_handle;
-        ESP_LOGI(TAG, "Connected: handle=%u", self->connHandle_);
-        ble_uuid128_t svc_uuid{}; ble_uuid128_from_str(ktsu::racebox::ble::Uuids::uartService, &svc_uuid);
-        int rc = ble_gattc_disc_svc_by_uuid(self->connHandle_, &svc_uuid.u, gatt_disc_svc_cb, self);
-        if (rc) ESP_LOGE(TAG, "disc_svc rc=%d", rc);
-      } else {
-        ESP_LOGE(TAG, "Connect failed: %d; restarting scan", ev->connect.status);
-        ble_gap_disc_params p{}; p.itvl=0x0060; p.window=0x0030; p.passive=1; ble_gap_disc(0, BLE_HS_FOREVER, &p, gap_scan_cb, nullptr);
-      }
-      break;
-    case BLE_GAP_EVENT_DISCONNECT:
-      ESP_LOGW(TAG, "Disconnected: reason=%d", ev->disconnect.reason);
-      self->connHandle_ = 0; self->uartTxValHandle_ = 0; self->uartRxValHandle_ = 0; self->notifyBuffer_.clear();
-      {
-        ble_gap_disc_params p{}; p.itvl=0x0060; p.window=0x0030; p.passive=1; ble_gap_disc(0, BLE_HS_FOREVER, &p, gap_scan_cb, nullptr);
-      }
-      break;
-    case BLE_GAP_EVENT_NOTIFY_RX:
-      if (ev->notify_rx.attr_handle == self->uartTxValHandle_ && ev->notify_rx.om) {
-        uint16_t len = OS_MBUF_PKTLEN(ev->notify_rx.om);
-        std::vector<uint8_t> tmp(len);
-        os_mbuf_copydata(ev->notify_rx.om, 0, len, tmp.data());
-        self->handleNotifyData(tmp.data(), len);
-      }
-      break;
-    default: break;
+  std::vector<uint8_t> frame;
+  frame.reserve(static_cast<size_t>(payloadLen) + 8);
+  frame.push_back(0xB5);
+  frame.push_back(0x62);
+  frame.push_back(msgClass);
+  frame.push_back(msgId);
+  frame.push_back(static_cast<uint8_t>(payloadLen & 0xFF));
+  frame.push_back(static_cast<uint8_t>((payloadLen >> 8) & 0xFF));
+  if (payload && payloadLen) frame.insert(frame.end(), payload, payload + payloadLen);
+
+  uint8_t ckA = 0, ckB = 0;
+  UbxParser::computeChecksum(frame.data() + 2, frame.size() - 2, ckA, ckB);
+  frame.push_back(ckA);
+  frame.push_back(ckB);
+
+  // An ATT write carries at most MTU-3 bytes. Splitting a UBX packet across
+  // writes is not attempted: every command we send is far smaller than this,
+  // and a silently torn frame would be worse than a clear failure.
+  const size_t maxWrite = attMtu_ > 3 ? static_cast<size_t>(attMtu_ - 3) : 20;
+  if (frame.size() > maxWrite) {
+    ESP_LOGE(TAG, "UBX frame of %u bytes exceeds the %u-byte ATT write limit",
+             static_cast<unsigned>(frame.size()), static_cast<unsigned>(maxWrite));
+    return false;
   }
-  return 0;
-}
 
-int gatt_disc_svc_cb(uint16_t conn_handle, const ble_gatt_error* error, const ble_gatt_svc* service, void* arg) {
-  auto* self = static_cast<RaceBoxClient*>(arg);
-  if (error->status != 0) { ESP_LOGE(TAG, "Service discovery error: %d", error->status); return BLE_HS_EDONE; }
-  self->uartSvcStart_ = service->start_handle; self->uartSvcEnd_ = service->end_handle;
-  ESP_LOGI(TAG, "UART svc: %u..%u", self->uartSvcStart_, self->uartSvcEnd_);
-  return ble_gattc_disc_all_chrs(conn_handle, self->uartSvcStart_, self->uartSvcEnd_, gatt_disc_chr_cb, self);
-}
-
-int gatt_disc_chr_cb(uint16_t conn_handle, const ble_gatt_error* ch_err, const ble_gatt_chr* chr, void* arg) {
-  auto* self = static_cast<RaceBoxClient*>(arg);
-  if (ch_err->status == BLE_HS_EDONE) {
-    // Done discovering chars. If we have TX, discover descriptors to find CCCD
-    if (self->uartTxValHandle_) {
-      return ble_gattc_disc_all_dscs(conn_handle, self->uartTxValHandle_, self->uartSvcEnd_, gatt_disc_dsc_cb, self);
-    }
-    return BLE_HS_EDONE;
+  const int rc = ble_gattc_write_flat(connHandle_, uartRxValHandle_, frame.data(),
+                                      static_cast<uint16_t>(frame.size()),
+                                      &RaceBoxClient::writeStatusCb, this);
+  if (rc != 0) {
+    ESP_LOGE(TAG, "ble_gattc_write_flat failed: %d", rc);
+    return false;
   }
-  if (ch_err->status != 0) { ESP_LOGE(TAG, "Char discovery error: %d", ch_err->status); return ch_err->status; }
-  ble_uuid128_t tx_uuid{}; ble_uuid128_from_str(ktsu::racebox::ble::Uuids::uartTxCharacteristic, &tx_uuid);
-  ble_uuid128_t rx_uuid{}; ble_uuid128_from_str(ktsu::racebox::ble::Uuids::uartRxCharacteristic, &rx_uuid);
-  if (ble_uuid_cmp(&chr->uuid.u, &tx_uuid.u) == 0) { self->uartTxValHandle_ = chr->val_handle; ESP_LOGI(TAG, "TX handle=%u", self->uartTxValHandle_); }
-  if (ble_uuid_cmp(&chr->uuid.u, &rx_uuid.u) == 0) { self->uartRxValHandle_ = chr->val_handle; ESP_LOGI(TAG, "RX handle=%u", self->uartRxValHandle_); }
-  return 0;
+  return true;
 }
 
-int gatt_disc_dsc_cb(uint16_t conn_handle, const ble_gatt_error* error, uint16_t chr_def_handle, const ble_gatt_dsc* dsc, void* arg) {
-  auto* self = static_cast<RaceBoxClient*>(arg);
-  (void)chr_def_handle;
-  if (error->status == BLE_HS_EDONE) { return BLE_HS_EDONE; }
-  if (error->status != 0) { ESP_LOGE(TAG, "Desc discovery error: %d", error->status); return error->status; }
-  // Look for CCCD (0x2902)
-  ble_uuid16_t cccd_uuid{}; cccd_uuid.u.type = BLE_UUID_TYPE_16; cccd_uuid.value = 0x2902;
-  if (ble_uuid_cmp(&dsc->uuid.u, &cccd_uuid.u) == 0) {
-    const uint8_t en[2] = {0x01, 0x00};
-    int rc = ble_gattc_write_flat(conn_handle, dsc->handle, en, sizeof(en), [](uint16_t, const ble_gatt_error* we, uint16_t, void* a){
-      if (we->status) ESP_LOGE(TAG, "Enable notify failed: %d", we->status); else ESP_LOGI(TAG, "Notifications enabled");
-      return 0;
-    }, self);
-    if (rc) ESP_LOGE(TAG, "CCCD write rc=%d", rc);
-  }
-  return 0;
+#else // !RACEBOX_HAVE_NIMBLE
+
+// Host / lint build: no BLE stack available.
+void RaceBoxClient::startScan() {}
+
+bool RaceBoxClient::begin() {
+  parser_.setSink([this](const RaceboxData& data) {
+    if (telemetryListener_) telemetryListener_(data);
+  });
+  ESP_LOGW(TAG, "built without NimBLE headers; BLE disabled");
+  return false;
 }
-#endif
 
+bool RaceBoxClient::sendUbx(uint8_t, uint8_t, const uint8_t*, uint16_t) { return false; }
 
+#endif // RACEBOX_HAVE_NIMBLE
+
+} } } // namespaces

@@ -2,8 +2,11 @@ idf_component_register(
   SRCS
     "main.cpp"
     "ble/RaceBoxClient.cpp"
+    "ble/UbxParser.cpp"
+    "config/Settings.cpp"
     "io/EncoderInput.cpp"
     "ui/Display.cpp"
+    "ui/LapTimer.cpp"
     "ui/Menu.cpp"
   INCLUDE_DIRS
     "."
@@ -19,7 +22,6 @@ idf_component_register(
     bt
     spi_flash
     esp_lcd
+    esp_lcd_ili9488
     lvgl
 )
-
-

@@ -9,6 +9,7 @@ param(
   [switch]$Monitor,
   [switch]$Menuconfig,
   [switch]$Erase,
+  [switch]$SetTarget,
   [string]$IdfRef = "v5.2.2",
   [string]$InstallPath,
   [Parameter(ValueFromRemainingArguments = $true)]
@@ -94,8 +95,26 @@ try {
     Invoke-IdfPy ($commonArgs + 'clean')
   }
 
-  Write-Section "Set target: $Target"
-  Invoke-IdfPy ($commonArgs + @('set-target', $Target))
+  # `idf.py set-target` deletes sdkconfig and regenerates it from
+  # sdkconfig.defaults, throwing away any local menuconfig changes. Running it
+  # unconditionally meant every build silently reset the configuration, so only
+  # do it when the target actually needs to change (or -SetTarget forces it).
+  $sdkconfigPath = Join-Path (Get-Location) 'sdkconfig'
+  $needsSetTarget = $true
+  if (-not $SetTarget -and (Test-Path $sdkconfigPath)) {
+    $targetMatch = Select-String -Path $sdkconfigPath -Pattern '^CONFIG_IDF_TARGET="(.+)"$' |
+                   Select-Object -First 1
+    if ($targetMatch -and $targetMatch.Matches[0].Groups[1].Value -eq $Target) {
+      $needsSetTarget = $false
+    }
+  }
+
+  if ($needsSetTarget) {
+    Write-Section "Set target: $Target"
+    Invoke-IdfPy ($commonArgs + @('set-target', $Target))
+  } else {
+    Write-Section "Target already $Target - keeping existing sdkconfig (pass -SetTarget to force)"
+  }
 
   if ($Menuconfig) {
     Write-Section 'menuconfig'
