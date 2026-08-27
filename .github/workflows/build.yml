@@ -1,8 +1,12 @@
 name: Build
 
 on:
+  # Only build branch pushes on the default branch. Everything else is covered
+  # by the pull_request trigger -- listening to both fired two identical runs
+  # per push, and their differing github.ref meant the concurrency group below
+  # could not collapse them.
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
 
 concurrency:
@@ -33,16 +37,9 @@ jobs:
 
       # Pinned to the same ref build.ps1 installs, so CI and local builds cannot
       # drift apart.
-      - name: Build firmware
+      - name: Build firmware and report image size
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: v5.2.2
           target: esp32s3
-          command: idf.py build
-
-      - name: Report image size
-        uses: espressif/esp-idf-ci-action@v1
-        with:
-          esp_idf_version: v5.2.2
-          target: esp32s3
-          command: idf.py size
+          command: idf.py build size
