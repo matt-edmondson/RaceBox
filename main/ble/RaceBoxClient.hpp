@@ -93,6 +93,11 @@ class RaceBoxClient {
                               uint16_t chrDefHandle, const struct ble_gatt_dsc* dsc, void* arg);
   static int writeStatusCb(uint16_t connHandle, const struct ble_gatt_error* error,
                            struct ble_gatt_attr* attr, void* arg);
+  // Outbound UBX writes need their own completion hook: writeStatusCb reports
+  // the CCCD write and promotes the link to Streaming, which a command write
+  // must not do.
+  static int txStatusCb(uint16_t connHandle, const struct ble_gatt_error* error,
+                        struct ble_gatt_attr* attr, void* arg);
   static int mtuCb(uint16_t connHandle, const struct ble_gatt_error* error, uint16_t mtu,
                    void* arg);
 
@@ -105,6 +110,13 @@ class RaceBoxClient {
   static RaceBoxClient* s_instance;
 
   bool matchesRacebox(const struct ble_gap_disc_desc& desc);
+  // Drop a peer we cannot stream from -- a missing UART service, characteristic
+  // or CCCD. Terminating the link routes recovery through the existing
+  // disconnect handler, which rescans, instead of parking in Connected forever.
+  void abandonConnection(const char* why);
+  // Clear every per-connection handle so a stale value from a previous peer
+  // cannot be mistaken for a successful discovery.
+  void clearConnectionState();
 #endif
 
   TelemetryListener telemetryListener_;
@@ -121,6 +133,7 @@ class RaceBoxClient {
   uint16_t uartSvcEnd_ = 0;
   uint16_t uartTxValHandle_ = 0; // notify (device -> us)
   uint16_t uartRxValHandle_ = 0; // write  (us -> device)
+  bool cccdWriteStarted_ = false;
 
   char peerName_[32] = {0};
   int8_t peerRssi_ = 0;

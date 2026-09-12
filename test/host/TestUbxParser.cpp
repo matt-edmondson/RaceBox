@@ -322,3 +322,63 @@ TEST(ResetClearsPartialFrameState) {
   feed(parser, sampleFrame());
   CHECK_EQ(c.got.size(), size_t{1});
 }
+
+// --- Transmit framing -------------------------------------------------------
+// sendUbx() on the BLE client frames outbound packets with UbxParser::buildFrame,
+// so the framing is exercised here rather than only on hardware.
+
+TEST(BuildFrameMatchesTheReferenceFraming) {
+  const std::vector<uint8_t> payload = {0x01, 0x02, 0x03, 0x04};
+  const std::vector<uint8_t> built =
+      UbxParser::buildFrame(0x06, 0x08, payload.data(), static_cast<uint16_t>(payload.size()));
+
+  CHECK_EQ(built.size(), payload.size() + 8);
+  CHECK(built == frame(0x06, 0x08, payload));
+}
+
+TEST(BuildFrameWritesTheLengthLittleEndian) {
+  const std::vector<uint8_t> payload(300, 0xAB);
+  const std::vector<uint8_t> built =
+      UbxParser::buildFrame(0xFF, 0x02, payload.data(), static_cast<uint16_t>(payload.size()));
+
+  CHECK_EQ(built.size(), size_t{308});
+  CHECK_EQ(built[4], uint8_t{300 & 0xFF});
+  CHECK_EQ(built[5], uint8_t{300 >> 8});
+}
+
+TEST(BuildFrameHandlesAnEmptyPayload) {
+  const std::vector<uint8_t> built = UbxParser::buildFrame(0x0A, 0x04, nullptr, 0);
+  CHECK_EQ(built.size(), size_t{8});
+  CHECK_EQ(built[0], uint8_t{0xB5});
+  CHECK_EQ(built[1], uint8_t{0x62});
+  CHECK_EQ(built[4], uint8_t{0});
+  CHECK_EQ(built[5], uint8_t{0});
+  // A null payload with a non-zero length is framed as empty rather than read.
+  CHECK(UbxParser::buildFrame(0x0A, 0x04, nullptr, 16) == built);
+}
+
+TEST(BuildFrameRejectsAnOversizedPayload) {
+  const std::vector<uint8_t> payload(UbxParser::kMaxPayloadLen + 1, 0);
+  CHECK(UbxParser::buildFrame(0xFF, 0x01, payload.data(),
+                              static_cast<uint16_t>(payload.size()))
+            .empty());
+}
+
+TEST(BuiltFramesRoundTripThroughTheParser) {
+  UbxParser parser;
+  Collector c;
+  parser.setSink(c.sink());
+
+  // A frame we build must be one we would accept: same sync word, same length
+  // encoding, same checksum.
+  const std::vector<uint8_t> payload = samplePayload();
+  const std::vector<uint8_t> built = UbxParser::buildFrame(
+      UbxParser::kRaceboxClass, UbxParser::kRaceboxDataId, payload.data(),
+      static_cast<uint16_t>(payload.size()));
+
+  parser.append(built.data(), built.size());
+  CHECK_EQ(c.got.size(), size_t{1});
+  CHECK_EQ(parser.checksumErrors(), uint32_t{0});
+  CHECK_EQ(parser.buffered(), size_t{0});
+  if (!c.got.empty()) CHECK_EQ(c.got[0].satellites, uint8_t{11});
+}

@@ -100,6 +100,30 @@ void RaceBoxClient::onHostSync() {
   s_instance->startScan();
 }
 
+void RaceBoxClient::clearConnectionState() {
+  connHandle_ = 0;
+  attMtu_ = 23;
+  uartSvcStart_ = 0;
+  uartSvcEnd_ = 0;
+  uartTxValHandle_ = 0;
+  uartRxValHandle_ = 0;
+  cccdWriteStarted_ = false;
+  parser_.reset();
+}
+
+void RaceBoxClient::abandonConnection(const char* why) {
+  ESP_LOGE(TAG, "unusable peer (%s); dropping the link", why);
+  // The disconnect event does the cleanup and starts the next scan. If the
+  // terminate itself fails there is no link left to wait on, so recover here.
+  const int rc = ble_gap_terminate(connHandle_, BLE_ERR_REM_USER_CONN_TERM);
+  if (rc != 0) {
+    ESP_LOGW(TAG, "ble_gap_terminate failed: %d; rescanning anyway", rc);
+    clearConnectionState();
+    setState(ConnectionState::Disconnected);
+    startScan();
+  }
+}
+
 void RaceBoxClient::startScan() {
   ble_gap_disc_params params{};
   params.itvl = 0x0060;
@@ -173,9 +197,8 @@ int RaceBoxClient::gapEventCb(struct ble_gap_event* ev, void* arg) {
         self->startScan();
         return 0;
       }
+      self->clearConnectionState();
       self->connHandle_ = ev->connect.conn_handle;
-      self->attMtu_ = 23;
-      self->parser_.reset();
       self->setState(ConnectionState::Connected);
 
       // A larger MTU lets a whole 88-byte RaceBox frame arrive in one
@@ -186,17 +209,13 @@ int RaceBoxClient::gapEventCb(struct ble_gap_event* ev, void* arg) {
       const ble_uuid128_t svcUuid = makeUuid128(kUartServiceBytes);
       const int rc = ble_gattc_disc_svc_by_uuid(self->connHandle_, &svcUuid.u,
                                                 &RaceBoxClient::serviceDiscCb, self);
-      if (rc != 0) ESP_LOGE(TAG, "service discovery failed to start: %d", rc);
+      if (rc != 0) self->abandonConnection("service discovery could not be started");
       return 0;
     }
 
     case BLE_GAP_EVENT_DISCONNECT: {
       ESP_LOGW(TAG, "disconnected: reason=%d", ev->disconnect.reason);
-      self->connHandle_ = 0;
-      self->uartTxValHandle_ = 0;
-      self->uartRxValHandle_ = 0;
-      self->attMtu_ = 23;
-      self->parser_.reset();
+      self->clearConnectionState();
       self->setState(ConnectionState::Disconnected);
       self->startScan();
       return 0;
@@ -207,10 +226,18 @@ int RaceBoxClient::gapEventCb(struct ble_gap_event* ev, void* arg) {
       const uint16_t len = OS_MBUF_PKTLEN(ev->notify_rx.om);
       if (len == 0) return 0;
       // Stack buffer sized for a full ATT payload avoids heap churn at 25 Hz.
+      // A negotiated MTU cannot exceed kPreferredMtu, so this only guards
+      // against a stack that hands us more than it agreed to: appending a
+      // truncated notification would silently corrupt the frame stream.
       uint8_t chunk[kPreferredMtu];
-      const uint16_t n = len < sizeof(chunk) ? len : sizeof(chunk);
-      if (os_mbuf_copydata(ev->notify_rx.om, 0, n, chunk) == 0) {
-        self->onNotifyData(chunk, n);
+      if (static_cast<size_t>(len) > sizeof(chunk)) {
+        ESP_LOGE(TAG, "notification of %u bytes exceeds the %u-byte buffer; resyncing",
+                 static_cast<unsigned>(len), static_cast<unsigned>(sizeof(chunk)));
+        self->parser_.reset();
+        return 0;
+      }
+      if (os_mbuf_copydata(ev->notify_rx.om, 0, len, chunk) == 0) {
+        self->onNotifyData(chunk, len);
       }
       return 0;
     }
@@ -247,9 +274,7 @@ int RaceBoxClient::serviceDiscCb(uint16_t connHandle, const struct ble_gatt_erro
   if (!self) return BLE_HS_EDONE;
 
   if (error && error->status == BLE_HS_EDONE) {
-    if (self->uartSvcStart_ == 0) {
-      ESP_LOGE(TAG, "UART service not found on peer");
-    }
+    if (self->uartSvcStart_ == 0) self->abandonConnection("no UART service");
     return 0;
   }
   if (!error || error->status != 0) {
@@ -273,7 +298,7 @@ int RaceBoxClient::charDiscCb(uint16_t connHandle, const struct ble_gatt_error* 
 
   if (error && error->status == BLE_HS_EDONE) {
     if (self->uartTxValHandle_ == 0) {
-      ESP_LOGE(TAG, "UART TX characteristic not found");
+      self->abandonConnection("no UART TX characteristic");
       return 0;
     }
     // Find the CCCD that turns notifications on.
@@ -306,7 +331,10 @@ int RaceBoxClient::descriptorDiscCb(uint16_t connHandle, const struct ble_gatt_e
   auto* self = static_cast<RaceBoxClient*>(arg);
   if (!self) return BLE_HS_EDONE;
 
-  if (error && error->status == BLE_HS_EDONE) return 0;
+  if (error && error->status == BLE_HS_EDONE) {
+    if (!self->cccdWriteStarted_) self->abandonConnection("no CCCD on the TX characteristic");
+    return 0;
+  }
   if (!error || error->status != 0) {
     ESP_LOGE(TAG, "descriptor discovery error: %d", error ? error->status : -1);
     return error ? error->status : BLE_HS_EDONE;
@@ -321,7 +349,11 @@ int RaceBoxClient::descriptorDiscCb(uint16_t connHandle, const struct ble_gatt_e
   const uint8_t enableNotify[2] = {0x01, 0x00};
   const int rc = ble_gattc_write_flat(connHandle, dsc->handle, enableNotify,
                                       sizeof(enableNotify), &RaceBoxClient::writeStatusCb, self);
-  if (rc != 0) ESP_LOGE(TAG, "CCCD write failed to start: %d", rc);
+  if (rc != 0) {
+    self->abandonConnection("CCCD write could not be started");
+    return 0;
+  }
+  self->cccdWriteStarted_ = true;
   return 0;
 }
 
@@ -337,6 +369,20 @@ int RaceBoxClient::writeStatusCb(uint16_t connHandle, const struct ble_gatt_erro
     self->setState(ConnectionState::Streaming);
   } else {
     ESP_LOGE(TAG, "enabling notifications failed: %d", error ? error->status : -1);
+    self->abandonConnection("notifications could not be enabled");
+  }
+  return 0;
+}
+
+int RaceBoxClient::txStatusCb(uint16_t connHandle, const struct ble_gatt_error* error,
+                              struct ble_gatt_attr* attr, void* arg) {
+  (void)connHandle;
+  (void)attr;
+  (void)arg;
+  if (error && error->status == 0) {
+    ESP_LOGD(TAG, "UBX write acknowledged");
+  } else {
+    ESP_LOGW(TAG, "UBX write failed: %d", error ? error->status : -1);
   }
   return 0;
 }
@@ -389,20 +435,11 @@ bool RaceBoxClient::sendUbx(uint8_t msgClass, uint8_t msgId, const uint8_t* payl
     return false;
   }
 
-  std::vector<uint8_t> frame;
-  frame.reserve(static_cast<size_t>(payloadLen) + 8);
-  frame.push_back(0xB5);
-  frame.push_back(0x62);
-  frame.push_back(msgClass);
-  frame.push_back(msgId);
-  frame.push_back(static_cast<uint8_t>(payloadLen & 0xFF));
-  frame.push_back(static_cast<uint8_t>((payloadLen >> 8) & 0xFF));
-  if (payload && payloadLen) frame.insert(frame.end(), payload, payload + payloadLen);
-
-  uint8_t ckA = 0, ckB = 0;
-  UbxParser::computeChecksum(frame.data() + 2, frame.size() - 2, ckA, ckB);
-  frame.push_back(ckA);
-  frame.push_back(ckB);
+  const std::vector<uint8_t> frame = UbxParser::buildFrame(msgClass, msgId, payload, payloadLen);
+  if (frame.empty()) {
+    ESP_LOGE(TAG, "sendUbx could not frame the packet");
+    return false;
+  }
 
   // An ATT write carries at most MTU-3 bytes. Splitting a UBX packet across
   // writes is not attempted: every command we send is far smaller than this,
@@ -416,7 +453,7 @@ bool RaceBoxClient::sendUbx(uint8_t msgClass, uint8_t msgId, const uint8_t* payl
 
   const int rc = ble_gattc_write_flat(connHandle_, uartRxValHandle_, frame.data(),
                                       static_cast<uint16_t>(frame.size()),
-                                      &RaceBoxClient::writeStatusCb, this);
+                                      &RaceBoxClient::txStatusCb, this);
   if (rc != 0) {
     ESP_LOGE(TAG, "ble_gattc_write_flat failed: %d", rc);
     return false;
