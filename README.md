@@ -87,8 +87,8 @@ checksum, and **discards frames that fail it** rather than decoding them.
 
 ## Testing
 
-The parts of the firmware with no ESP-IDF dependency — UBX parsing, lap timing,
-menu navigation and settings — are unit tested on the host:
+The parts of the firmware with no ESP-IDF dependency — UBX parsing and outbound
+framing, lap timing, menu navigation and settings — are unit tested on the host:
 
 ```sh
 cmake -S test/host -B build-host

@@ -611,7 +611,7 @@ void Display::renderTelemetry() {
   }
 
   if (hasTelemetry_) {
-    snprintf(buf, sizeof(buf), "Alt %.0f m   Hdg %.0f\xC2\xB0   HDOP %.1f\nLat %.5f  Lon %.5f",
+    snprintf(buf, sizeof(buf), "Alt %.0f m   Hdg %.0f\xC2\xB0   PDOP %.1f\nLat %.5f  Lon %.5f",
              static_cast<double>(data_.mslAltitudeM), static_cast<double>(data_.headingDeg),
              static_cast<double>(data_.pdop), data_.latitudeDeg, data_.longitudeDeg);
   } else {

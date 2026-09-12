@@ -41,6 +41,30 @@ void UbxParser::computeChecksum(const uint8_t* from, size_t len, uint8_t& ckA, u
 
 void UbxParser::reset() { buffer_.clear(); }
 
+std::vector<uint8_t> UbxParser::buildFrame(uint8_t msgClass, uint8_t msgId,
+                                           const uint8_t* payload, uint16_t payloadLen) {
+  if (payloadLen > kMaxPayloadLen) return {};
+  if (!payload) payloadLen = 0;
+
+  std::vector<uint8_t> frame;
+  frame.reserve(static_cast<size_t>(payloadLen) + kFrameOverhead);
+  frame.push_back(kSync1);
+  frame.push_back(kSync2);
+  frame.push_back(msgClass);
+  frame.push_back(msgId);
+  frame.push_back(static_cast<uint8_t>(payloadLen & 0xFF));
+  frame.push_back(static_cast<uint8_t>((payloadLen >> 8) & 0xFF));
+  if (payloadLen) frame.insert(frame.end(), payload, payload + payloadLen);
+
+  // The checksum covers everything from the class byte to the end of the
+  // payload -- the sync word is excluded.
+  uint8_t ckA = 0, ckB = 0;
+  computeChecksum(frame.data() + 2, frame.size() - 2, ckA, ckB);
+  frame.push_back(ckA);
+  frame.push_back(ckB);
+  return frame;
+}
+
 void UbxParser::append(const uint8_t* data, size_t len) {
   if (!data || len == 0) return;
 

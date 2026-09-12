@@ -60,6 +60,14 @@ class UbxParser {
   // with the same checksum algorithm.
   static void computeChecksum(const uint8_t* from, size_t len, uint8_t& ckA, uint8_t& ckB);
 
+  // Frame an outbound UBX packet: sync word, class, id, little-endian length,
+  // payload and Fletcher checksum. Returns an empty vector when payloadLen
+  // exceeds kMaxPayloadLen, so callers cannot transmit a length field this
+  // parser would itself reject as corrupt. Lives here rather than in the BLE
+  // client so the framing is covered by the host tests.
+  static std::vector<uint8_t> buildFrame(uint8_t msgClass, uint8_t msgId, const uint8_t* payload,
+                                         uint16_t payloadLen);
+
   // Decode an 80-byte RaceBox data-message payload. Public for unit testing.
   static RaceboxData decodeRaceboxPayload(const uint8_t* payload);
 
