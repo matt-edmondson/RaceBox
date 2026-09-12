@@ -15,7 +15,7 @@ on an ILI9488 panel.
 | Command path to the device (ACK/NACK, GNSS config query) | Implemented, unit tested |
 | Telemetry / menu / about UI | Implemented |
 | Rotary encoder (PCNT quadrature + debounced button) | Implemented |
-| Session and lap timing | Implemented, unit tested |
+| Session and lap timing (GPS-time based, frozen on stop) | Implemented, unit tested |
 | Settings persistence (units, brightness) | Implemented |
 
 **Not yet validated on hardware.** The logic that can be tested off-target is

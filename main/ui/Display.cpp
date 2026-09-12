@@ -617,16 +617,27 @@ void Display::renderTelemetry() {
   lv_label_set_text(speedLabel_, buf);
   lv_label_set_text(unitLabel_, settings_ ? settings_->speedUnitLabel() : "km/h");
 
-  if (lapTimer_ && (lapTimer_->running() || lapTimer_->lapCount() > 0)) {
-    char lap[16];
+  if (lapTimer_ && lapTimer_->hasSession()) {
     char best[16];
-    formatDuration(lapTimer_->currentLapMs(), lap, sizeof(lap));
     formatDuration(lapTimer_->bestLapMs(), best, sizeof(best));
-    if (lapTimer_->lapCount() > 0) {
-      snprintf(buf, sizeof(buf), "L%u  %s   best %s",
-               static_cast<unsigned>(lapTimer_->lapCount() + 1), lap, best);
+    if (lapTimer_->stopped()) {
+      // A finished session: the total it ended on, not a lap still counting.
+      char total[16];
+      formatDuration(lapTimer_->sessionMs(), total, sizeof(total));
+      if (lapTimer_->lapCount() > 0) {
+        snprintf(buf, sizeof(buf), "END  %s   best %s", total, best);
+      } else {
+        snprintf(buf, sizeof(buf), "END  %s", total);
+      }
     } else {
-      snprintf(buf, sizeof(buf), "L1  %s", lap);
+      char lap[16];
+      formatDuration(lapTimer_->currentLapMs(), lap, sizeof(lap));
+      if (lapTimer_->lapCount() > 0) {
+        snprintf(buf, sizeof(buf), "L%u  %s   best %s",
+                 static_cast<unsigned>(lapTimer_->lapCount() + 1), lap, best);
+      } else {
+        snprintf(buf, sizeof(buf), "L1  %s", lap);
+      }
     }
     lv_label_set_text(timerLabel_, buf);
   } else {
