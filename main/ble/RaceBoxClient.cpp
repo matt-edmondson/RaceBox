@@ -115,7 +115,7 @@ void RaceBoxClient::abandonConnection(const char* why) {
   ESP_LOGE(TAG, "unusable peer (%s); dropping the link", why);
   // The disconnect event does the cleanup and starts the next scan. If the
   // terminate itself fails there is no link left to wait on, so recover here.
-  const int rc = ble_gap_terminate(connHandle_, BLE_ERR_REM_USER_CONN_TERMINATE);
+  const int rc = ble_gap_terminate(connHandle_, BLE_ERR_REM_USER_CONN_TERM);
   if (rc != 0) {
     ESP_LOGW(TAG, "ble_gap_terminate failed: %d; rescanning anyway", rc);
     clearConnectionState();
