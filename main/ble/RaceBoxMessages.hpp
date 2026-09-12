@@ -27,6 +27,31 @@ constexpr uint8_t kMsgIdAck = 0x02;         // command accepted
 constexpr uint8_t kMsgIdNack = 0x03;        // command rejected or unsupported
 constexpr uint8_t kMsgIdGnssConfig = 0x27;  // GNSS receiver configuration
 
+// Which RaceBox is on the other end. It matters for byte 67 of the telemetry
+// payload, which the protocol documentation defines differently per model:
+// battery charge on a Mini and Mini S, input voltage on a Micro.
+enum class DeviceModel : uint8_t { Unknown, Mini, MiniS, Micro };
+
+// Identify the model from the advertised device name ("RaceBox Mini 1234567",
+// "RaceBox Mini S 1234567", "RaceBox Micro 1234567"). Matching is
+// case-insensitive, and "Mini S" is tested before "Mini" so the longer name is
+// not swallowed by the shorter one.
+DeviceModel deviceModelFromName(const char* name);
+
+const char* toString(DeviceModel model);
+
+// Byte 67 of the telemetry payload, interpreted per model.
+// Percent and charging apply to a Mini and Mini S; volts to a Micro. Each is
+// nonsense on the other model, so callers pick with the model in hand.
+inline uint8_t batteryPercentFromRaw(uint8_t raw) { return static_cast<uint8_t>(raw & 0x7F); }
+inline bool chargingFromRaw(uint8_t raw) { return (raw & 0x80) != 0; }
+inline float inputVoltsFromRaw(uint8_t raw) { return static_cast<float>(raw) / 10.0f; }
+
+// True when byte 67 should be read as a battery percentage rather than volts.
+// An unidentified device is treated as a Mini: that is what this firmware
+// targets, and a peer matched only by its service UUID advertises no name.
+inline bool reportsBatteryPercent(DeviceModel model) { return model != DeviceModel::Micro; }
+
 // Answer to a command we sent: which message it refers to, and whether the
 // device accepted it. A NACK also means "unsupported" -- the GNSS configuration
 // message needs device firmware 3.3 or later.

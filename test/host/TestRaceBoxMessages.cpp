@@ -221,3 +221,50 @@ TEST(ATruncatedDataMessageIsNotReportedAsACommandReply) {
   CHECK_EQ(telemetry, 0);
   CHECK_EQ(messages.got.size(), size_t{0});
 }
+
+// --- Device model -----------------------------------------------------------
+
+TEST(DeviceModelComesFromTheAdvertisedName) {
+  using ktsu::racebox::ble::deviceModelFromName;
+  using ktsu::racebox::ble::DeviceModel;
+
+  CHECK(deviceModelFromName("RaceBox Mini 1234567") == DeviceModel::Mini);
+  // "Mini S" must not be read as a plain "Mini".
+  CHECK(deviceModelFromName("RaceBox Mini S 1234567") == DeviceModel::MiniS);
+  CHECK(deviceModelFromName("RaceBox Micro 1234567") == DeviceModel::Micro);
+
+  // Matching is case-insensitive and tolerates an unexpected shape.
+  CHECK(deviceModelFromName("racebox mini s 42") == DeviceModel::MiniS);
+  CHECK(deviceModelFromName("MICRO") == DeviceModel::Micro);
+
+  // A peer matched only by its service UUID advertises no name at all.
+  CHECK(deviceModelFromName(nullptr) == DeviceModel::Unknown);
+  CHECK(deviceModelFromName("") == DeviceModel::Unknown);
+  CHECK(deviceModelFromName("RaceBox") == DeviceModel::Unknown);
+}
+
+TEST(ByteSixtySevenIsReadPerModel) {
+  using ktsu::racebox::ble::batteryPercentFromRaw;
+  using ktsu::racebox::ble::chargingFromRaw;
+  using ktsu::racebox::ble::DeviceModel;
+  using ktsu::racebox::ble::inputVoltsFromRaw;
+  using ktsu::racebox::ble::reportsBatteryPercent;
+
+  // Documentation example for a Mini: 0x59 is 89%, not charging.
+  CHECK_EQ(batteryPercentFromRaw(0x59), uint8_t{89});
+  CHECK(!chargingFromRaw(0x59));
+  // The same byte with the top bit set is the same level, charging.
+  CHECK_EQ(batteryPercentFromRaw(0xD9), uint8_t{89});
+  CHECK(chargingFromRaw(0xD9));
+
+  // Documentation example for a Micro: 0x79 is 12.1 V.
+  CHECK_NEAR(inputVoltsFromRaw(0x79), 12.1, 1e-6);
+  // Read as a percentage it would be a nonsensical 121%, which is exactly why
+  // the status bar picks by model.
+  CHECK_EQ(batteryPercentFromRaw(0x79), uint8_t{121});
+
+  CHECK(reportsBatteryPercent(DeviceModel::Mini));
+  CHECK(reportsBatteryPercent(DeviceModel::MiniS));
+  CHECK(reportsBatteryPercent(DeviceModel::Unknown));
+  CHECK(!reportsBatteryPercent(DeviceModel::Micro));
+}

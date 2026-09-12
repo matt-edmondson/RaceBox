@@ -53,7 +53,8 @@ class Display {
   void updateTelemetry(const ktsu::racebox::ble::RaceboxData& data);
   // Link state plus the peer's identity, so the UI can name what it is talking
   // to instead of showing placeholders.
-  void updateLink(ktsu::racebox::ble::ConnectionState state, const char* peerName, int8_t rssi);
+  void updateLink(ktsu::racebox::ble::ConnectionState state, const char* peerName, int8_t rssi,
+                  ktsu::racebox::ble::DeviceModel model);
   // Also called on the BLE host task: the GNSS receiver configuration the
   // device reported, shown on the About screen.
   void updateGnssConfig(const ktsu::racebox::ble::GnssConfig& config);
@@ -87,6 +88,7 @@ class Display {
   ktsu::racebox::ble::ConnectionState pendingState_ =
       ktsu::racebox::ble::ConnectionState::Idle;
   ktsu::racebox::ble::GnssConfig pendingGnssConfig_{};
+  ktsu::racebox::ble::DeviceModel pendingModel_ = ktsu::racebox::ble::DeviceModel::Unknown;
   char pendingPeerName_[32] = {0};
   int8_t pendingRssi_ = 0;
   bool dataDirty_ = false;
@@ -101,6 +103,7 @@ class Display {
       ktsu::racebox::ble::ConnectionState::Idle;
   char peerName_[32] = {0};
   int8_t peerRssi_ = 0;
+  ktsu::racebox::ble::DeviceModel deviceModel_ = ktsu::racebox::ble::DeviceModel::Unknown;
   bool hasTelemetry_ = false;
   bool needsRepaint_ = true;
 

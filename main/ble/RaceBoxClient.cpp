@@ -211,6 +211,7 @@ bool RaceBoxClient::matchesRacebox(const struct ble_gap_disc_desc& desc) {
       nameMatch = true;
       memcpy(peerName_, fields.name, n);
       peerName_[n] = '\0';
+      deviceModel_ = deviceModelFromName(peerName_);
     }
   }
 

@@ -59,7 +59,8 @@ void onTelemetry(const RaceboxData& data) { g_display.updateTelemetry(data); }
 // Reading the client's peer fields here is safe: they are written on this same
 // NimBLE host task, immediately before the state change is published.
 void onConnectionState(ConnectionState state) {
-  g_display.updateLink(state, g_client.peerName(), g_client.peerRssi());
+  g_display.updateLink(state, g_client.peerName(), g_client.peerRssi(),
+                       g_client.deviceModel());
 }
 
 void onGnssConfig(const GnssConfig& config) { g_display.updateGnssConfig(config); }

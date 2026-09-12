@@ -47,10 +47,12 @@ void Display::updateTelemetry(const ktsu::racebox::ble::RaceboxData& data) {
   dataDirty_ = true;
 }
 
-void Display::updateLink(ConnectionState state, const char* peerName, int8_t rssi) {
+void Display::updateLink(ConnectionState state, const char* peerName, int8_t rssi,
+                        ktsu::racebox::ble::DeviceModel model) {
   ktsu::racebox::common::LockGuard guard(dataLock_);
   pendingState_ = state;
   pendingRssi_ = rssi;
+  pendingModel_ = model;
   if (peerName) {
     strncpy(pendingPeerName_, peerName, sizeof(pendingPeerName_) - 1);
     pendingPeerName_[sizeof(pendingPeerName_) - 1] = '\0';
@@ -222,6 +224,7 @@ void Display::loop() {
       connState_ = pendingState_;
       stateDirty_ = false;
       peerRssi_ = pendingRssi_;
+      deviceModel_ = pendingModel_;
       memcpy(peerName_, pendingPeerName_, sizeof(peerName_));
       needsRepaint_ = true;
     }
@@ -581,10 +584,18 @@ void Display::renderStatusBar() {
 
   char right[64];
   if (hasTelemetry_) {
-    snprintf(right, sizeof(right), "%u sat  %u%%%s  %d dBm",
-             static_cast<unsigned>(data_.satellites),
-             static_cast<unsigned>(data_.batteryPercent), data_.charging ? "+" : "",
-             static_cast<int>(peerRssi_));
+    // Telemetry byte 67 is a battery percentage on a Mini and Mini S but the
+    // input voltage on a Micro, where showing it as a percentage would read as
+    // a nonsensical "121%".
+    char power[16];
+    if (ktsu::racebox::ble::reportsBatteryPercent(deviceModel_)) {
+      snprintf(power, sizeof(power), "%u%%%s", static_cast<unsigned>(data_.batteryPercent),
+               data_.charging ? "+" : "");
+    } else {
+      snprintf(power, sizeof(power), "%.1f V", static_cast<double>(data_.inputVoltage));
+    }
+    snprintf(right, sizeof(right), "%u sat  %s  %d dBm",
+             static_cast<unsigned>(data_.satellites), power, static_cast<int>(peerRssi_));
   } else {
     snprintf(right, sizeof(right), "no data");
   }
@@ -700,11 +711,11 @@ void Display::renderAbout() {
   char buf[320];
   snprintf(buf, sizeof(buf),
            "RaceBox Mini Interface\n\n"
-           "Device: %s\nRSSI: %d dBm\nLink: %s\nGNSS: %s\n\n"
+           "Device: %s (%s)\nRSSI: %d dBm\nLink: %s\nGNSS: %s\n\n"
            "Units: %s\nBrightness: %u%%\n\n"
            "Click or hold to go back",
-           peerName_[0] ? peerName_ : "-", static_cast<int>(peerRssi_),
-           ktsu::racebox::ble::toString(connState_), gnss,
+           peerName_[0] ? peerName_ : "-", ktsu::racebox::ble::toString(deviceModel_),
+           static_cast<int>(peerRssi_), ktsu::racebox::ble::toString(connState_), gnss,
            settings_ ? settings_->speedUnitLabel() : "km/h",
            static_cast<unsigned>(settings_ ? settings_->brightness() : 100));
   lv_label_set_text(aboutLabel_, buf);

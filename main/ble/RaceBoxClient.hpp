@@ -74,6 +74,8 @@ class RaceBoxClient {
   // Name of the peer we last connected to, empty until one is found.
   const char* peerName() const { return peerName_; }
   int8_t peerRssi() const { return peerRssi_; }
+  // Derived from the advertised name; decides how telemetry byte 67 reads.
+  DeviceModel deviceModel() const { return deviceModel_; }
 
   // Ask the device for its GNSS receiver configuration. Read-only: the device
   // replies with a 0xFF 0x27 message of its own, or a NACK on firmware older
@@ -160,6 +162,7 @@ class RaceBoxClient {
 
   char peerName_[32] = {0};
   int8_t peerRssi_ = 0;
+  DeviceModel deviceModel_ = DeviceModel::Unknown;
 };
 
 } } } // namespaces
