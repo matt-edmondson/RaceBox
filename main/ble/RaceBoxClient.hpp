@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "RaceBoxMessages.hpp"
 #include "RaceboxData.hpp"
 #include "UbxParser.hpp"
 
@@ -43,6 +44,7 @@ class RaceBoxClient {
  public:
   using TelemetryListener = std::function<void(const RaceboxData&)>;
   using StateListener = std::function<void(ConnectionState)>;
+  using GnssConfigListener = std::function<void(const GnssConfig&)>;
 
   RaceBoxClient() = default;
   RaceBoxClient(const RaceBoxClient&) = delete;
@@ -60,6 +62,11 @@ class RaceBoxClient {
     telemetryListener_ = std::move(listener);
   }
   void setStateListener(StateListener listener) { stateListener_ = std::move(listener); }
+  // Called on the NimBLE host task when the device answers a configuration
+  // query, which happens once per connection.
+  void setGnssConfigListener(GnssConfigListener listener) {
+    gnssConfigListener_ = std::move(listener);
+  }
 
   ConnectionState state() const { return state_; }
   bool streaming() const { return state_ == ConnectionState::Streaming; }
@@ -67,6 +74,18 @@ class RaceBoxClient {
   // Name of the peer we last connected to, empty until one is found.
   const char* peerName() const { return peerName_; }
   int8_t peerRssi() const { return peerRssi_; }
+  // Derived from the advertised name; decides how telemetry byte 67 reads.
+  DeviceModel deviceModel() const { return deviceModel_; }
+
+  // Ask the device for its GNSS receiver configuration. Read-only: the device
+  // replies with a 0xFF 0x27 message of its own, or a NACK on firmware older
+  // than 3.3. Issued automatically once notifications are running, so the About
+  // screen can show what the receiver is actually configured for.
+  bool requestGnssConfig();
+
+  // Last configuration the device reported, valid once hasGnssConfig() is true.
+  bool hasGnssConfig() const { return hasGnssConfig_; }
+  const GnssConfig& gnssConfig() const { return gnssConfig_; }
 
   // Frame and transmit a UBX packet on the UART RX characteristic. Returns
   // false when not connected, or when the framed packet exceeds what a single
@@ -80,6 +99,8 @@ class RaceBoxClient {
   void setState(ConnectionState next);
   void startScan();
   void onNotifyData(const uint8_t* data, uint16_t len);
+  // Acknowledgements and command replies arrive here from the parser.
+  void onDeviceMessage(uint8_t msgClass, uint8_t msgId, const uint8_t* payload, size_t payloadLen);
 
 #ifdef RACEBOX_HAVE_NIMBLE
   // NimBLE gives every GAP/GATT callback a user argument, so the instance is
@@ -121,6 +142,7 @@ class RaceBoxClient {
 
   TelemetryListener telemetryListener_;
   StateListener stateListener_;
+  GnssConfigListener gnssConfigListener_;
   UbxParser parser_;
 
   bool started_ = false;
@@ -134,9 +156,13 @@ class RaceBoxClient {
   uint16_t uartTxValHandle_ = 0; // notify (device -> us)
   uint16_t uartRxValHandle_ = 0; // write  (us -> device)
   bool cccdWriteStarted_ = false;
+  bool gnssConfigRequested_ = false; // one query per connection
+  bool hasGnssConfig_ = false;
+  GnssConfig gnssConfig_;
 
   char peerName_[32] = {0};
   int8_t peerRssi_ = 0;
+  DeviceModel deviceModel_ = DeviceModel::Unknown;
 };
 
 } } } // namespaces

@@ -32,13 +32,19 @@ void LapTimer::start() {
   state_ = State::Running;
   sessionStartTowMs_ = latestTowMs_;
   lapStartTowMs_ = latestTowMs_;
+  frozenSessionMs_ = 0;
+  frozenLapMs_ = 0;
   topSpeedKmh_ = 0.0f;
   laps_.clear();
 }
 
 void LapTimer::stop() {
   if (state_ != State::Running) return;
-  state_ = State::Idle;
+  // Capture before leaving Running: the getters below read the live elapsed
+  // time only in that state, and further samples must not move these.
+  frozenSessionMs_ = elapsed(sessionStartTowMs_, latestTowMs_);
+  frozenLapMs_ = elapsed(lapStartTowMs_, latestTowMs_);
+  state_ = State::Stopped;
 }
 
 void LapTimer::lap() {
@@ -54,14 +60,18 @@ void LapTimer::reset() {
   topSpeedKmh_ = 0.0f;
   sessionStartTowMs_ = latestTowMs_;
   lapStartTowMs_ = latestTowMs_;
+  frozenSessionMs_ = 0;
+  frozenLapMs_ = 0;
 }
 
 uint32_t LapTimer::sessionMs() const {
+  if (state_ == State::Stopped) return frozenSessionMs_;
   if (state_ != State::Running) return 0;
   return elapsed(sessionStartTowMs_, latestTowMs_);
 }
 
 uint32_t LapTimer::currentLapMs() const {
+  if (state_ == State::Stopped) return frozenLapMs_;
   if (state_ != State::Running) return 0;
   return elapsed(lapStartTowMs_, latestTowMs_);
 }

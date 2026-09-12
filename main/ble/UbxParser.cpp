@@ -131,11 +131,20 @@ void UbxParser::drain() {
       continue;
     }
 
-    // 5. Decode the messages we care about; silently skip the rest.
-    if (msgClass == kRaceboxClass && msgId == kRaceboxDataId &&
-        payloadLen >= kRaceboxDataPayloadLen) {
-      ++framesDecoded_;
-      if (sink_) sink_(decodeRaceboxPayload(&buffer_[kHeaderLen]));
+    // 5. Decode telemetry; hand everything else to the message sink, which is
+    //    where acknowledgements and command replies are picked up.
+    if (msgClass == kRaceboxClass && msgId == kRaceboxDataId) {
+      // A data message too short to decode is dropped rather than reported as a
+      // command reply.
+      if (payloadLen >= kRaceboxDataPayloadLen) {
+        ++framesDecoded_;
+        if (sink_) sink_(decodeRaceboxPayload(&buffer_[kHeaderLen]));
+      }
+    } else {
+      ++otherFrames_;
+      if (messageSink_) {
+        messageSink_(msgClass, msgId, payloadLen ? &buffer_[kHeaderLen] : nullptr, payloadLen);
+      }
     }
 
     buffer_.erase(buffer_.begin(), buffer_.begin() + static_cast<long>(frameLen));

@@ -12,15 +12,21 @@ on an ILI9488 panel.
 | --- | --- |
 | BLE central (scan, connect, discover, subscribe) | Implemented |
 | UBX framing + RaceBox data decode | Implemented, unit tested |
+| Command path to the device (ACK/NACK, GNSS config query) | Implemented, unit tested |
 | Telemetry / menu / about UI | Implemented |
 | Rotary encoder (PCNT quadrature + debounced button) | Implemented |
-| Session and lap timing | Implemented, unit tested |
+| Session and lap timing (GPS-time based, frozen on stop) | Implemented, unit tested |
 | Settings persistence (units, brightness) | Implemented |
 
 **Not yet validated on hardware.** The logic that can be tested off-target is
 covered by the host test suite below, but the firmware has not been run against
-a physical RaceBox or panel. Treat the pin defaults, the ILI9488 colour setup,
-and the RaceBox payload offsets past speed/altitude as needing a bring-up pass.
+a physical RaceBox or panel. Treat the pin defaults and the ILI9488 colour setup
+as needing a bring-up pass.
+
+The telemetry payload offsets no longer need one: the host tests decode the
+complete example packet published in the RaceBox BLE protocol documentation and
+check every field against the values that document gives, including its
+checksum.
 
 ## Requirements
 
@@ -85,10 +91,30 @@ RaceBox data messages are UBX class `0xFF`, id `0x01`, with an 80-byte payload.
 `UbxParser` reassembles packets across notifications, verifies the Fletcher
 checksum, and **discards frames that fail it** rather than decoding them.
 
+Everything else that passes the checksum goes to the parser's message sink,
+where `RaceBoxClient` picks up command replies. RaceBox does not use the
+standard UBX ACK class: acknowledgements arrive as `0xFF 0x02` (ACK) and
+`0xFF 0x03` (NACK), each carrying the class and id of the message being
+answered — see `main/ble/RaceBoxMessages.hpp`.
+
+Byte 67 of the payload means different things per model — battery charge on a
+Mini and Mini S, input voltage on a Micro — so the model is derived from the
+advertised device name and the status bar shows either `89%` or `12.1 V`. Read
+as a percentage, a Micro's 12.1 V would display as `121%`.
+
+Writes go out on the UART RX characteristic via `RaceBoxClient::sendUbx()`.
+Once notifications are running the firmware sends one read-only GNSS receiver
+configuration query (`0xFF 0x27` with an empty payload) and shows the answer on
+the About screen. A device on firmware older than 3.3 NACKs it, which is
+handled as information rather than an error. Recording control and history
+download (Mini S and Micro only, and gated behind the memory-unlock command)
+are not implemented.
+
 ## Testing
 
 The parts of the firmware with no ESP-IDF dependency — UBX parsing and outbound
-framing, lap timing, menu navigation and settings — are unit tested on the host:
+framing, command and acknowledgement codecs, lap timing, menu navigation and
+settings — are unit tested on the host:
 
 ```sh
 cmake -S test/host -B build-host
@@ -102,7 +128,7 @@ CI runs these on every push alongside a full ESP-IDF firmware build.
 
 ```
 main/
-  ble/     RaceBoxClient (NimBLE central), UbxParser, RaceboxData
+  ble/     RaceBoxClient (NimBLE central), UbxParser, RaceBoxMessages, RaceboxData
   config/  Pins (Kconfig-backed), BleUuids, Settings (NVS-backed)
   io/      EncoderInput (PCNT quadrature + debounced button)
   ui/      Display (LVGL), Menu, LapTimer

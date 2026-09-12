@@ -63,6 +63,57 @@ void RaceBoxClient::onNotifyData(const uint8_t* data, uint16_t len) {
   parser_.append(data, len);
 }
 
+void RaceBoxClient::onDeviceMessage(uint8_t msgClass, uint8_t msgId, const uint8_t* payload,
+                                    size_t payloadLen) {
+  if (msgClass != kRaceboxMsgClass) {
+    ESP_LOGD(TAG, "ignoring message class 0x%02X id 0x%02X", msgClass, msgId);
+    return;
+  }
+
+  switch (msgId) {
+    case kMsgIdAck:
+    case kMsgIdNack: {
+      Acknowledgement ack;
+      if (!decodeAcknowledgement(msgId, payload, payloadLen, ack)) {
+        ESP_LOGW(TAG, "malformed %s payload (%u bytes)", msgId == kMsgIdAck ? "ACK" : "NACK",
+                 static_cast<unsigned>(payloadLen));
+        return;
+      }
+      // A NACK also means "unsupported": the configuration query needs device
+      // firmware 3.3 or later, so this is informational, not an error.
+      ESP_LOGI(TAG, "%s for 0x%02X 0x%02X", ack.accepted ? "ACK" : "NACK", ack.msgClass,
+               ack.msgId);
+      return;
+    }
+
+    case kMsgIdGnssConfig: {
+      GnssConfig config;
+      if (!decodeGnssConfig(payload, payloadLen, config)) {
+        ESP_LOGW(TAG, "malformed GNSS config payload (%u bytes)",
+                 static_cast<unsigned>(payloadLen));
+        return;
+      }
+      gnssConfig_ = config;
+      hasGnssConfig_ = true;
+      ESP_LOGI(TAG, "GNSS config: model=%u 3d-speed=%s min-accuracy=%um",
+               static_cast<unsigned>(config.dynamicModel), config.enable3dSpeed ? "on" : "off",
+               static_cast<unsigned>(config.minHorizontalAccuracyM));
+      if (gnssConfigListener_) gnssConfigListener_(config);
+      return;
+    }
+
+    default:
+      ESP_LOGD(TAG, "unhandled RaceBox message id 0x%02X (%u byte payload)", msgId,
+               static_cast<unsigned>(payloadLen));
+      return;
+  }
+}
+
+bool RaceBoxClient::requestGnssConfig() {
+  // An empty payload is the documented read form of this message.
+  return sendUbx(kRaceboxMsgClass, kMsgIdGnssConfig, nullptr, 0);
+}
+
 #ifdef RACEBOX_HAVE_NIMBLE
 
 RaceBoxClient* RaceBoxClient::s_instance = nullptr;
@@ -108,6 +159,10 @@ void RaceBoxClient::clearConnectionState() {
   uartTxValHandle_ = 0;
   uartRxValHandle_ = 0;
   cccdWriteStarted_ = false;
+  gnssConfigRequested_ = false;
+  // The configuration belongs to the peer we were talking to, so it stops being
+  // current the moment the link does; it is re-queried on the next connection.
+  hasGnssConfig_ = false;
   parser_.reset();
 }
 
@@ -156,6 +211,7 @@ bool RaceBoxClient::matchesRacebox(const struct ble_gap_disc_desc& desc) {
       nameMatch = true;
       memcpy(peerName_, fields.name, n);
       peerName_[n] = '\0';
+      deviceModel_ = deviceModelFromName(peerName_);
     }
   }
 
@@ -367,6 +423,12 @@ int RaceBoxClient::writeStatusCb(uint16_t connHandle, const struct ble_gatt_erro
   if (error && error->status == 0) {
     ESP_LOGI(TAG, "notifications enabled");
     self->setState(ConnectionState::Streaming);
+    // Only now is there a link to ask anything over. Read-only, and a device
+    // that does not support it simply NACKs.
+    if (!self->gnssConfigRequested_) {
+      self->gnssConfigRequested_ = true;
+      self->requestGnssConfig();
+    }
   } else {
     ESP_LOGE(TAG, "enabling notifications failed: %d", error ? error->status : -1);
     self->abandonConnection("notifications could not be enabled");
@@ -393,6 +455,10 @@ bool RaceBoxClient::begin() {
   s_instance = this;
   parser_.setSink([this](const RaceboxData& data) {
     if (telemetryListener_) telemetryListener_(data);
+  });
+  parser_.setMessageSink([this](uint8_t msgClass, uint8_t msgId, const uint8_t* payload,
+                                size_t payloadLen) {
+    onDeviceMessage(msgClass, msgId, payload, payloadLen);
   });
 
   // ESP32-S3 has no Classic BT; reclaiming its memory is harmless elsewhere.
@@ -470,10 +536,16 @@ bool RaceBoxClient::begin() {
   parser_.setSink([this](const RaceboxData& data) {
     if (telemetryListener_) telemetryListener_(data);
   });
+  parser_.setMessageSink([this](uint8_t msgClass, uint8_t msgId, const uint8_t* payload,
+                                size_t payloadLen) {
+    onDeviceMessage(msgClass, msgId, payload, payloadLen);
+  });
   ESP_LOGW(TAG, "built without NimBLE headers; BLE disabled");
   return false;
 }
 
+// requestGnssConfig() is shared with the NimBLE build -- it goes through
+// sendUbx(), which is stubbed out just below.
 bool RaceBoxClient::sendUbx(uint8_t, uint8_t, const uint8_t*, uint16_t) { return false; }
 
 #endif // RACEBOX_HAVE_NIMBLE

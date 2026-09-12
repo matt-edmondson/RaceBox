@@ -47,15 +47,23 @@ void Display::updateTelemetry(const ktsu::racebox::ble::RaceboxData& data) {
   dataDirty_ = true;
 }
 
-void Display::updateLink(ConnectionState state, const char* peerName, int8_t rssi) {
+void Display::updateLink(ConnectionState state, const char* peerName, int8_t rssi,
+                        ktsu::racebox::ble::DeviceModel model) {
   ktsu::racebox::common::LockGuard guard(dataLock_);
   pendingState_ = state;
   pendingRssi_ = rssi;
+  pendingModel_ = model;
   if (peerName) {
     strncpy(pendingPeerName_, peerName, sizeof(pendingPeerName_) - 1);
     pendingPeerName_[sizeof(pendingPeerName_) - 1] = '\0';
   }
   stateDirty_ = true;
+}
+
+void Display::updateGnssConfig(const ktsu::racebox::ble::GnssConfig& config) {
+  ktsu::racebox::common::LockGuard guard(dataLock_);
+  pendingGnssConfig_ = config;
+  gnssConfigDirty_ = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -216,7 +224,14 @@ void Display::loop() {
       connState_ = pendingState_;
       stateDirty_ = false;
       peerRssi_ = pendingRssi_;
+      deviceModel_ = pendingModel_;
       memcpy(peerName_, pendingPeerName_, sizeof(peerName_));
+      needsRepaint_ = true;
+    }
+    if (gnssConfigDirty_) {
+      gnssConfig_ = pendingGnssConfig_;
+      gnssConfigDirty_ = false;
+      hasGnssConfig_ = true;
       needsRepaint_ = true;
     }
   }
@@ -569,10 +584,18 @@ void Display::renderStatusBar() {
 
   char right[64];
   if (hasTelemetry_) {
-    snprintf(right, sizeof(right), "%u sat  %u%%%s  %d dBm",
-             static_cast<unsigned>(data_.satellites),
-             static_cast<unsigned>(data_.batteryPercent), data_.charging ? "+" : "",
-             static_cast<int>(peerRssi_));
+    // Telemetry byte 67 is a battery percentage on a Mini and Mini S but the
+    // input voltage on a Micro, where showing it as a percentage would read as
+    // a nonsensical "121%".
+    char power[16];
+    if (ktsu::racebox::ble::reportsBatteryPercent(deviceModel_)) {
+      snprintf(power, sizeof(power), "%u%%%s", static_cast<unsigned>(data_.batteryPercent),
+               data_.charging ? "+" : "");
+    } else {
+      snprintf(power, sizeof(power), "%.1f V", static_cast<double>(data_.inputVoltage));
+    }
+    snprintf(right, sizeof(right), "%u sat  %s  %d dBm",
+             static_cast<unsigned>(data_.satellites), power, static_cast<int>(peerRssi_));
   } else {
     snprintf(right, sizeof(right), "no data");
   }
@@ -594,16 +617,27 @@ void Display::renderTelemetry() {
   lv_label_set_text(speedLabel_, buf);
   lv_label_set_text(unitLabel_, settings_ ? settings_->speedUnitLabel() : "km/h");
 
-  if (lapTimer_ && (lapTimer_->running() || lapTimer_->lapCount() > 0)) {
-    char lap[16];
+  if (lapTimer_ && lapTimer_->hasSession()) {
     char best[16];
-    formatDuration(lapTimer_->currentLapMs(), lap, sizeof(lap));
     formatDuration(lapTimer_->bestLapMs(), best, sizeof(best));
-    if (lapTimer_->lapCount() > 0) {
-      snprintf(buf, sizeof(buf), "L%u  %s   best %s",
-               static_cast<unsigned>(lapTimer_->lapCount() + 1), lap, best);
+    if (lapTimer_->stopped()) {
+      // A finished session: the total it ended on, not a lap still counting.
+      char total[16];
+      formatDuration(lapTimer_->sessionMs(), total, sizeof(total));
+      if (lapTimer_->lapCount() > 0) {
+        snprintf(buf, sizeof(buf), "END  %s   best %s", total, best);
+      } else {
+        snprintf(buf, sizeof(buf), "END  %s", total);
+      }
     } else {
-      snprintf(buf, sizeof(buf), "L1  %s", lap);
+      char lap[16];
+      formatDuration(lapTimer_->currentLapMs(), lap, sizeof(lap));
+      if (lapTimer_->lapCount() > 0) {
+        snprintf(buf, sizeof(buf), "L%u  %s   best %s",
+                 static_cast<unsigned>(lapTimer_->lapCount() + 1), lap, best);
+      } else {
+        snprintf(buf, sizeof(buf), "L1  %s", lap);
+      }
     }
     lv_label_set_text(timerLabel_, buf);
   } else {
@@ -673,14 +707,26 @@ void Display::renderAbout() {
   lv_obj_add_flag(menuView_, LV_OBJ_FLAG_HIDDEN);
   lv_obj_remove_flag(aboutView_, LV_OBJ_FLAG_HIDDEN);
 
-  char buf[256];
+  char gnss[64];
+  if (hasGnssConfig_) {
+    snprintf(gnss, sizeof(gnss), "model %u, 3D speed %s, min acc %u m",
+             static_cast<unsigned>(gnssConfig_.dynamicModel),
+             gnssConfig_.enable3dSpeed ? "on" : "off",
+             static_cast<unsigned>(gnssConfig_.minHorizontalAccuracyM));
+  } else {
+    // Either the query has not been answered yet, or the device NACKed it --
+    // the configuration message needs RaceBox firmware 3.3 or later.
+    snprintf(gnss, sizeof(gnss), "not reported");
+  }
+
+  char buf[320];
   snprintf(buf, sizeof(buf),
            "RaceBox Mini Interface\n\n"
-           "Device: %s\nRSSI: %d dBm\nLink: %s\n\n"
+           "Device: %s (%s)\nRSSI: %d dBm\nLink: %s\nGNSS: %s\n\n"
            "Units: %s\nBrightness: %u%%\n\n"
            "Click or hold to go back",
-           peerName_[0] ? peerName_ : "-", static_cast<int>(peerRssi_),
-           ktsu::racebox::ble::toString(connState_),
+           peerName_[0] ? peerName_ : "-", ktsu::racebox::ble::toString(deviceModel_),
+           static_cast<int>(peerRssi_), ktsu::racebox::ble::toString(connState_), gnss,
            settings_ ? settings_->speedUnitLabel() : "km/h",
            static_cast<unsigned>(settings_ ? settings_->brightness() : 100));
   lv_label_set_text(aboutLabel_, buf);

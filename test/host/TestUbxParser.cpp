@@ -382,3 +382,86 @@ TEST(BuiltFramesRoundTripThroughTheParser) {
   CHECK_EQ(parser.buffered(), size_t{0});
   if (!c.got.empty()) CHECK_EQ(c.got[0].satellites, uint8_t{11});
 }
+
+// --- The protocol documentation's own example packet ----------------------
+// RaceBox BLE Protocol Documentation (rev 9), "Example packet from RaceBox
+// Mini / Mini S", reproduced byte for byte along with every value the document
+// says it decodes to. This checks our field offsets and scale factors against
+// the vendor's own reference rather than against our test helpers -- the README
+// flags the offsets past speed/altitude as needing verification, and this is it.
+
+TEST(DecodesTheDocumentedExamplePacket) {
+  const std::vector<uint8_t> packet = {
+      0xB5, 0x62, 0xFF, 0x01, 0x50, 0x00, 0xA0, 0xE7, 0x0C, 0x07, 0xE6, 0x07, 0x01, 0x0A,
+      0x08, 0x33, 0x08, 0x37, 0x19, 0x00, 0x00, 0x00, 0x2A, 0xAD, 0x4D, 0x0E, 0x03, 0x01,
+      0xEA, 0x0B, 0xC6, 0x93, 0xE1, 0x0D, 0x3B, 0x37, 0x6F, 0x19, 0x61, 0x8C, 0x09, 0x00,
+      0x0F, 0x01, 0x09, 0x00, 0x9C, 0x03, 0x00, 0x00, 0x2C, 0x07, 0x00, 0x00, 0x23, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xD0, 0x00, 0x00, 0x00, 0x88, 0xA9, 0xDD, 0x00,
+      0x2C, 0x01, 0x00, 0x59, 0xFD, 0xFF, 0x71, 0x00, 0xCE, 0x03, 0x2F, 0xFF, 0x56, 0x00,
+      0xFC, 0xFF, 0x06, 0xDB};
+
+  UbxParser parser;
+  Collector c;
+  parser.setSink(c.sink());
+  parser.append(packet.data(), packet.size());
+
+  // The document's own checksum (06 DB) must satisfy our Fletcher implementation.
+  CHECK_EQ(parser.checksumErrors(), uint32_t{0});
+  CHECK_EQ(c.got.size(), size_t{1});
+  if (c.got.empty()) return;
+  const RaceboxData& d = c.got[0];
+
+  // Timing: iTOW 118286240, 2022-01-10 08:51:08, 25 ns accuracy, 239971626 ns.
+  CHECK_EQ(d.iTowMs, uint32_t{118286240});
+  CHECK_EQ(d.year, uint16_t{2022});
+  CHECK_EQ(d.month, uint8_t{1});
+  CHECK_EQ(d.day, uint8_t{10});
+  CHECK_EQ(d.hour, uint8_t{8});
+  CHECK_EQ(d.minute, uint8_t{51});
+  CHECK_EQ(d.second, uint8_t{8});
+  CHECK_EQ(d.validityFlags, uint8_t{0x37});
+  CHECK_EQ(d.timeAccuracyNs, uint32_t{25});
+  CHECK_EQ(d.nanoseconds, int32_t{239971626});
+  CHECK_EQ(d.dateTimeFlags, uint8_t{0xEA});
+
+  // Fix: 3D, GNSS fix OK, 11 satellites.
+  CHECK(d.fixType == FixType::Fix3D);
+  CHECK_EQ(d.fixStatusFlags, uint8_t{0x01});
+  CHECK(d.fixValid);
+  CHECK_EQ(d.satellites, uint8_t{11});
+
+  // Position: 23.2887238 E, 42.6719035 N, 625.761 m WGS, 590.095 m MSL,
+  // 0.924 m horizontal and 1.836 m vertical accuracy.
+  CHECK_NEAR(d.longitudeDeg, 23.2887238, 1e-7);
+  CHECK_NEAR(d.latitudeDeg, 42.6719035, 1e-7);
+  CHECK_NEAR(d.wgsAltitudeM, 625.761, 1e-3);
+  CHECK_NEAR(d.mslAltitudeM, 590.095, 1e-3);
+  CHECK_NEAR(d.horizontalAccuracyM, 0.924, 1e-3);
+  CHECK_NEAR(d.verticalAccuracyM, 1.836, 1e-3);
+
+  // Motion: 35 mm/s = 0.126 kph, heading 0, heading accuracy 145.26856 deg,
+  // PDOP 3.
+  CHECK_NEAR(d.speedKmh, 0.126, 1e-3);
+  CHECK_NEAR(d.headingDeg, 0.0, 1e-6);
+  // Speed accuracy is the one cell where the document contradicts itself: it
+  // prints "208 mm/s = 0.704 kph", but 208 mm/s is 0.7488 kph, and the same
+  // table's speed row (35 mm/s = 0.126 kph) confirms the x0.0036 factor we use.
+  // 0.704 kph would need a raw value of ~196, not the 0xD0 in the packet, so
+  // the decoded column is wrong rather than our conversion.
+  CHECK_NEAR(d.speedAccuracyKmh, 0.7488, 1e-4);
+  CHECK_NEAR(d.headingAccuracyDeg, 145.26856, 1e-4);
+  CHECK_NEAR(d.pdop, 3.0, 1e-6);
+
+  // Battery: 0x59 -> 89%, not charging.
+  CHECK_EQ(d.batteryRaw, uint8_t{0x59});
+  CHECK_EQ(d.batteryPercent, uint8_t{89});
+  CHECK(!d.charging);
+
+  // Inertial: -0.003 / 0.113 / 0.974 g, -2.09 / 0.86 / -0.04 deg/s.
+  CHECK_NEAR(d.gForceX, -0.003, 1e-6);
+  CHECK_NEAR(d.gForceY, 0.113, 1e-6);
+  CHECK_NEAR(d.gForceZ, 0.974, 1e-6);
+  CHECK_NEAR(d.rotationRateX, -2.09, 1e-6);
+  CHECK_NEAR(d.rotationRateY, 0.86, 1e-6);
+  CHECK_NEAR(d.rotationRateZ, -0.04, 1e-6);
+}

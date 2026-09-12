@@ -86,16 +86,70 @@ TEST(StopFreezesTimingButKeepsLaps) {
   t.start();
   t.update(sampleAt(20'000));
   t.lap();
+  t.update(sampleAt(32'000));            // 12s into lap 2
   t.stop();
 
   CHECK(!t.running());
+  CHECK(t.stopped());
+  CHECK(t.hasSession());
   CHECK_EQ(t.lapCount(), size_t{1});
   CHECK_EQ(t.laps()[0], uint32_t{20'000});
-  CHECK_EQ(t.sessionMs(), uint32_t{0});  // not accumulating any more
 
+  // Stopping freezes the clock at the time the session ended -- it does not
+  // zero it. A driver who has just finished a run still needs to see it.
+  CHECK_EQ(t.sessionMs(), uint32_t{32'000});
+  CHECK_EQ(t.currentLapMs(), uint32_t{12'000});
+
+  // Later samples must not move a frozen session on.
   t.update(sampleAt(60'000));
-  CHECK_EQ(t.sessionMs(), uint32_t{0});
+  CHECK_EQ(t.sessionMs(), uint32_t{32'000});
+  CHECK_EQ(t.currentLapMs(), uint32_t{12'000});
   CHECK_EQ(t.lapCount(), size_t{1});     // laps survive for review
+}
+
+TEST(StoppingTwiceKeepsTheFirstFinalTime) {
+  LapTimer t;
+  t.update(sampleAt(1000));
+  t.start();
+  t.update(sampleAt(9000));
+  t.stop();
+  CHECK_EQ(t.sessionMs(), uint32_t{8000});
+
+  // A second stop is a no-op, including for the frozen values.
+  t.update(sampleAt(40'000));
+  t.stop();
+  CHECK_EQ(t.sessionMs(), uint32_t{8000});
+}
+
+TEST(ResetAfterStopClearsTheFrozenTime) {
+  LapTimer t;
+  t.update(sampleAt(0));
+  t.start();
+  t.update(sampleAt(15'000));
+  t.stop();
+  CHECK_EQ(t.sessionMs(), uint32_t{15'000});
+
+  t.reset();
+  CHECK(t.state() == LapTimer::State::Idle);
+  CHECK(!t.stopped());
+  CHECK(!t.hasSession());
+  CHECK_EQ(t.sessionMs(), uint32_t{0});
+  CHECK_EQ(t.currentLapMs(), uint32_t{0});
+}
+
+TEST(RestartAfterStopStartsFromZero) {
+  LapTimer t;
+  t.update(sampleAt(0));
+  t.start();
+  t.update(sampleAt(15'000));
+  t.stop();
+
+  t.update(sampleAt(20'000));
+  t.start();                             // a new session, not a resume
+  CHECK_EQ(t.sessionMs(), uint32_t{0});
+  CHECK_EQ(t.currentLapMs(), uint32_t{0});
+  t.update(sampleAt(23'000));
+  CHECK_EQ(t.sessionMs(), uint32_t{3000});
 }
 
 TEST(RestartClearsPreviousLaps) {

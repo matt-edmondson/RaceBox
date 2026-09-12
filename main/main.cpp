@@ -16,6 +16,7 @@
 #endif
 
 using ktsu::racebox::ble::ConnectionState;
+using ktsu::racebox::ble::GnssConfig;
 using ktsu::racebox::ble::RaceBoxClient;
 using ktsu::racebox::ble::RaceboxData;
 using ktsu::racebox::config::Settings;
@@ -58,8 +59,11 @@ void onTelemetry(const RaceboxData& data) { g_display.updateTelemetry(data); }
 // Reading the client's peer fields here is safe: they are written on this same
 // NimBLE host task, immediately before the state change is published.
 void onConnectionState(ConnectionState state) {
-  g_display.updateLink(state, g_client.peerName(), g_client.peerRssi());
+  g_display.updateLink(state, g_client.peerName(), g_client.peerRssi(),
+                       g_client.deviceModel());
 }
+
+void onGnssConfig(const GnssConfig& config) { g_display.updateGnssConfig(config); }
 
 bool initNvs() {
 #ifdef RACEBOX_HAVE_NVS_FLASH
@@ -109,6 +113,7 @@ extern "C" void app_main(void) {
 
   g_client.setTelemetryListener(onTelemetry);
   g_client.setStateListener(onConnectionState);
+  g_client.setGnssConfigListener(onGnssConfig);
   if (!nvsOk) {
     ESP_LOGE(TAG, "skipping BLE start because NVS is unavailable");
   } else if (!g_client.begin()) {

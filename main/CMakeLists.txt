@@ -2,6 +2,7 @@ idf_component_register(
   SRCS
     "main.cpp"
     "ble/RaceBoxClient.cpp"
+    "ble/RaceBoxMessages.cpp"
     "ble/UbxParser.cpp"
     "config/Settings.cpp"
     "io/EncoderInput.cpp"
