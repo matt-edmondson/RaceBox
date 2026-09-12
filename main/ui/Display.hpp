@@ -54,6 +54,9 @@ class Display {
   // Link state plus the peer's identity, so the UI can name what it is talking
   // to instead of showing placeholders.
   void updateLink(ktsu::racebox::ble::ConnectionState state, const char* peerName, int8_t rssi);
+  // Also called on the BLE host task: the GNSS receiver configuration the
+  // device reported, shown on the About screen.
+  void updateGnssConfig(const ktsu::racebox::ble::GnssConfig& config);
 
   bool ready() const { return inited_; }
 
@@ -83,13 +86,17 @@ class Display {
   ktsu::racebox::ble::RaceboxData pendingData_{};
   ktsu::racebox::ble::ConnectionState pendingState_ =
       ktsu::racebox::ble::ConnectionState::Idle;
+  ktsu::racebox::ble::GnssConfig pendingGnssConfig_{};
   char pendingPeerName_[32] = {0};
   int8_t pendingRssi_ = 0;
   bool dataDirty_ = false;
   bool stateDirty_ = false;
+  bool gnssConfigDirty_ = false;
 
   // UI-task-owned copies.
   ktsu::racebox::ble::RaceboxData data_{};
+  ktsu::racebox::ble::GnssConfig gnssConfig_{};
+  bool hasGnssConfig_ = false;
   ktsu::racebox::ble::ConnectionState connState_ =
       ktsu::racebox::ble::ConnectionState::Idle;
   char peerName_[32] = {0};

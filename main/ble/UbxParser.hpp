@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "RaceBoxMessages.hpp"
 #include "RaceboxData.hpp"
 
 #include <cstddef>
@@ -25,6 +26,11 @@ namespace ktsu { namespace racebox { namespace ble {
 class UbxParser {
  public:
   using Sink = std::function<void(const RaceboxData&)>;
+  // Every other checksum-valid frame -- acknowledgements and command replies --
+  // is handed over raw. The payload pointer is only valid for the duration of
+  // the call, and the callee must not feed the parser from inside it.
+  using MessageSink = std::function<void(uint8_t msgClass, uint8_t msgId, const uint8_t* payload,
+                                        size_t payloadLen)>;
 
   // A UBX payload larger than this is treated as a corrupt length field. RaceBox
   // data messages carry 80 bytes; the headroom covers other message classes.
@@ -33,14 +39,15 @@ class UbxParser {
   // field would make the parser wait forever while notifications accumulate.
   static constexpr size_t kMaxBufferedBytes = 2048;
 
-  // RaceBox data message identity.
-  static constexpr uint8_t kRaceboxClass = 0xFF;
-  static constexpr uint8_t kRaceboxDataId = 0x01;
+  // RaceBox data message identity (see RaceBoxMessages.hpp for the full set).
+  static constexpr uint8_t kRaceboxClass = kRaceboxMsgClass;
+  static constexpr uint8_t kRaceboxDataId = kMsgIdData;
   static constexpr size_t kRaceboxDataPayloadLen = 80;
 
   UbxParser();
 
   void setSink(Sink sink) { sink_ = std::move(sink); }
+  void setMessageSink(MessageSink sink) { messageSink_ = std::move(sink); }
 
   // Feed bytes from a BLE notification. Complete, checksum-valid RaceBox data
   // messages are decoded and passed to the sink before this returns.
@@ -52,6 +59,7 @@ class UbxParser {
   // --- Diagnostics ---
   size_t buffered() const { return buffer_.size(); }
   uint32_t framesDecoded() const { return framesDecoded_; }
+  uint32_t otherFrames() const { return otherFrames_; }
   uint32_t checksumErrors() const { return checksumErrors_; }
   uint32_t overflows() const { return overflows_; }
   uint32_t resyncs() const { return resyncs_; }
@@ -76,7 +84,9 @@ class UbxParser {
 
   std::vector<uint8_t> buffer_;
   Sink sink_;
+  MessageSink messageSink_;
   uint32_t framesDecoded_ = 0;
+  uint32_t otherFrames_ = 0;
   uint32_t checksumErrors_ = 0;
   uint32_t overflows_ = 0;
   uint32_t resyncs_ = 0;
